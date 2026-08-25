@@ -1,32 +1,59 @@
-报错提示 任务逻辑死锁，等待超时，仍未找到 wt_relaxed.pdb -> 对应解决参数 删除 submit_task 中的死等循环代码，将等待文件和提取最低能量构象的逻辑移到底层工具内部
-。
-报错提示 UnboundLocalError: local variable 'glob' referenced before assignment -> 对应解决参数 在文件最顶部全局导入库，并删除函数体内部所有的局部导入代码
+# Rosetta Cartesian ddG 突变计算手册
 
-。
-报错提示 【执行报错】未在 tool2_params/ 目录下找到任何 .params 文件 -> 对应解决参数 在 submit_task 函数中保留配体文件的真实后缀，避免强制转换；如果是纯蛋白体系，则需修改代码取消该强制检查
-。
-报错提示 TypeError: Chatbot.__init__() got an unexpected keyword argument 'type' -> 对应解决参数 针对旧版 Gradio 环境，删除 gr.Chatbot 定义中的 type="messages"，并将聊天记录改为 [用户输入, 机器回复] 格式
+## 核心算法说明
+Cartesian ddG 用于评估氨基酸突变对蛋白质稳定性的影响（ΔΔG）。与传统基于内坐标的 relax 不同，它在笛卡尔坐标系下运行。
 
-。
-报错提示 Data incompatible with messages format. Each message should be a dictionary... -> 对应解决参数 将 history 数据结构改为字典格式 {"role": "user", "content": "..."}，或在流式交互中为 gr.Chatbot 添加 type="tuples" 参数
-。
-报错提示 ValueError: No acceptable neighbor atoms in molecule! -> 对应解决参数 在本地通过分子软件为配体加氢，直接导出并上传 .mol2 文件，跳过网页后端的自动加氢转换
+## 必备运行参数
+- -s : 输入的经过 Cartesian Relax 处理后的野生型 PDB 结构。
+- -ddg:mut_file : 指向包含突变信息的 mutfile 文件路径。
+- -score:weights ref2015_cart : 必须使用 Cartesian 专属打分函数。
+- -relax:min_type lbfgs_armijo_nonmonotone : 推荐的最小化算法。
+- -ddg:iterations : 推荐设置为 3，以平衡计算速度和精度。
 
-。
-报错提示 WARNING: fragment 1 has 921 non-H atoms; protein residues have 4 - 14 -> 对应解决参数 本地删除复合物中的蛋白质标准氨基酸，仅保留纯糖或独立配体，另存为 .pdb 或 .mol2 后上传至配体窗口
+## 结果解析逻辑
+生成的 .ddg 结果文件中，包含 WT（野生型）和 MUT（突变型）的打分。
+最终 ΔΔG 计算公式为： ΔΔG = min(MUT_scores) - min(WT_scores)
+负值表示突变使结构更稳定，正值表示突变导致不稳定。
 
-。
-报错提示 NameError: name 'time' is not defined （以及 subprocess、glob） -> 对应解决参数 在 rosetta_tools.py 通过字符串动态生成子脚本（如 run_ddg.py 或 auto_clean.py）时，必须在字符串最开头显式添加对应的 import 语句
 
-。
-报错提示 OSError: Cannot find empty port in range: 7860-7860 -> 对应解决参数 在终端执行 fuser -k 7860/tcp 清理残留进程，或在代码底部将 server_port 更改为 7861
 
-。
-报错提示 Error code: 403 - Failed check: SAFETY_CHECK_TYPE_BIO -> 对应解决参数 触发了 API 厂商的生物安全审查，输入指令时应避开“突变”、“残基”等敏感生物词汇，改用中性的数学或物理语言
+# Rosetta 常见执行报错与排查指南
 
-。
-报错提示 Agent 连续输出多条重复回复（无限刷屏） -> 对应解决参数 停止在终端粘贴带有换行符的目录列表，改用 cat 获取结果文件内容，去掉换行符合并后再发送，避免触发终端的并发换行提交
+## 报错 1: Unrecognized residue
+- 错误信息示例: ERROR: Unrecognized residue: LIG
+- 发生原因: Rosetta 无法识别 PDB 文件中的配体或非标准氨基酸，缺少对应的 .params 参数文件。
+- 修复方案: 必须先调用 parameterize_ligand 工具为该配体生成 .params 文件，并在后续步骤中通过 -extra_res_fa 参数引入。
 
-。
-报错提示 TypeError: ChatInterface.__init__() got an unexpected keyword argument 'theme' -> 对应解决参数 激活正确的虚拟环境后执行 pip install --upgrade gradio，或者将 theme 参数挂载到 gr.Blocks(theme=custom_theme) 中。
-报错提示 UserWarning: The parameters have been moved from the Blocks constructor to the launch() -> 对应解决参数 移除 gr.Blocks() 中的 theme 参数，将其移至代码底部的 demo.launch(theme=custom_theme) 中。
+## 报错 2: Missing density to jump
+- 错误信息示例: missing_density_to_jump is set to false
+- 发生原因: 蛋白质晶体结构中存在断链或缺失的电子密度。
+- 修复方案: 在执行 relax 时，必须添加命令行参数 -missing_density_to_jump 忽略缺失密度。
+
+## 报错 3: No CA atom found
+- 错误信息示例: cannot find CA atom for residue
+- 发生原因: 获取晶体学行号时，指定的链 ID 与 PDB 内部不匹配，或者该原子在物理清洗时被过滤。
+- 修复方案: 使用工具 get_rosetta_numbering 检查并确认正确的链 ID (Chain ID)。
+
+
+
+# Rosetta Mutfile 格式标准指南
+
+## Mutfile 基本结构
+Mutfile 用于定义突变信息。文件必须以 "total 1"（代表一个突变组）开始，第二行必须是 "1"（代表该组包含几个突变）。
+
+## 格式示例
+total 1
+1
+W 45 A
+
+## 字段解析
+- 第一个字母 (W): 野生型氨基酸的单字母缩写。
+- 数字 (45): Rosetta 内部绝对行号，不能使用晶体学 PDB 行号。
+- 第二个字母 (A): 突变后的氨基酸单字母缩写。
+
+## 注意事项
+多个突变同时发生时，需要修改第一行的突变数量，并依次列出。例如双突变：
+total 1
+2
+W 45 A
+Y 60 F
