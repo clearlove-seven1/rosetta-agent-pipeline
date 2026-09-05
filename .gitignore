@@ -1,44 +1,51 @@
-# API keys
+# Environment
 .env
 .env.*
 !.env.example
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 
-# LangChain / vector database
-chroma_db/
+# CLI rules
+.clinerules/
+.clinerules/**
 
-# Rosetta运行结果
-tool2_params/
-tool3_relax/
-tool4_mut_results/
-tool5_summary/
+# Learn / experiment directories
+learn_*/
+learn_*/**
 
-# 临时文件
-*.log
-*.tmp
+# Input data (large files)
+ligand
+ligand.*
+ligand/**
+*.mol2
 
-# OS
+protein
+protein.*
+protein/**
+*.pdb
+
+# Tests
+test_*
+test_*/
+test_*.py
+
+# Gradio cache
+.gradio/
+
+# Output / build artifacts
+output/
+build/
+dist/
+*.egg-info/
+
+# Local backups
+*.mock_backup
+*.bak
+
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
-
-ligand.mol2
-protein.pdb
-test.pdb
-.gradio
-clinerules
-
-pdbs/*
-output/*
-
-
-# 忽略规则文件
-.clinerules/rules.md
-
-# 忽略 inputs 下的真实数据，但保留目录结构
-inputs/ligand/*
-!inputs/ligand/.gitkeep
-inputs/pdbs/*
-!inputs/pdbs/.gitkeep

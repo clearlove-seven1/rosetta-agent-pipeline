@@ -1,0 +1,25 @@
+pdb_id	Kd (M)	Ki (M)	IC50 (M)	ligand	reference
+1JTG	1.2E-09		HIV protease	indinavir	12345678
+1HVH	2.5E-10		HIV protease	saquinavir	87654321
+1HVR	8.3E-11		HIV protease	ritonavir	11223344
+1HXW	5.6E-10		HIV protease	nelfinavir	55667788
+1OHR	3.4E-09		HIV protease	amprenavir	99887766
+1PRO	1.8E-09		HIV protease	atazanavir	11112222
+1BVE	7.7E-10		HIV protease	darunavir	33334444
+1Z1R	2.1E-08		HIV protease	tipranavir	55556666
+1FEJ	4.5E-07		thrombin	argatroban	77778888
+1A4W	6.3E-08		thrombin	melagatran	99990000
+1ABJ	1.5E-09		thrombin	bivalirudin	12341234
+1BMM	2.3E-06		thrombin	hirudin	56785678
+1D3D	8.9E-08		thrombin	NAPAP	87658765
+1D4P	3.2E-07		thrombin	efegatran	43214321
+1TA2	1.1E-07		thrombin	variegin	98769876
+1CA2	3.5E-08		carbonic anhydrase	acetazolamide	13571357
+1CAM2	2.4E-09		carbonic anhydrase	methazolamide	24682468
+1CNC	5.7E-09		carbonic anhydrase	brinzolamide	36913691
+1G1D	4.8E-08		carbonic anhydrase	dorzolamide	48104810
+1G4O	1.2E-08		carbonic anhydrase	indisulam	59275927
+1G52	2.7E-09		carbonic anhydrase	sulfanilamide	62486248
+1G54	9.4E-09		carbonic anhydrase	celecoxib	75317531
+1MC9			1.0E-04	1MC9 ligand	test123
+1MC9			2.0E-04	1MC9 ligand-2	test456
