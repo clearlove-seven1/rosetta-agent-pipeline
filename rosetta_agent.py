@@ -79,22 +79,47 @@ MAX_RETRIES = 2  # 单个 step 最多重试次数
 # ==========================================
 # 3. 任务感知工具节点（保持原有线程隔离行为）
 # ==========================================
+MAX_TOOL_RESULT_CHARS = 16000  # tool 结果超过这个长度会被首尾截断
+
+
+def _truncate_tool_result(content: str, max_chars: int) -> str:
+    """超过 max_chars 时保留首尾各一半，中间用省略号标记"""
+    if len(content) <= max_chars:
+        return content
+    half = max_chars // 2
+    return f"{content[:half]}\n\n... [已截断 {len(content) - max_chars} 字符] ...\n\n{content[-half:]}"
+
+
 class TaskAwareToolNode(ToolNode):
-    """继承 ToolNode：拦截执行，强行读取 thread_id（即 task_id）并注入工作区上下文"""
+    """继承 ToolNode：拦截执行，强行读取 thread_id（即 task_id）并注入工作区上下文；
+    同时对超长 tool 结果做首尾截断，避免炸 context window"""
 
     def invoke(self, input, config=None, **kwargs):
         if config and "configurable" in config:
             task_id = config["configurable"].get("thread_id", ".")
             target_dir = os.path.join("output", task_id)
             current_workspace.set(target_dir)
-        return super().invoke(input, config=config, **kwargs)
+        result = super().invoke(input, config=config, **kwargs)
+        self._truncate_messages(result)
+        return result
 
     async def ainvoke(self, input, config=None, **kwargs):
         if config and "configurable" in config:
             task_id = config["configurable"].get("thread_id", ".")
             target_dir = os.path.join("output", task_id)
             current_workspace.set(target_dir)
-        return await super().ainvoke(input, config=config, **kwargs)
+        result = await super().ainvoke(input, config=config, **kwargs)
+        self._truncate_messages(result)
+        return result
+
+    @staticmethod
+    def _truncate_messages(result):
+        """对 ToolMessage.content 超过阈值的做首尾截断，中间用省略号标记"""
+        for m in result.get("messages", []):
+            if isinstance(m, ToolMessage):
+                content = str(m.content)
+                if len(content) > MAX_TOOL_RESULT_CHARS:
+                    m.content = _truncate_tool_result(content, MAX_TOOL_RESULT_CHARS)
 
 
 # ==========================================
@@ -222,8 +247,8 @@ def progress_poll_node(state: AgentState, config=None, **kwargs):
     else:
         workspace = current_workspace.get()
 
-    mut_dir = os.path.join(workspace, "tool4_mut_results")
-    sum_dir = os.path.join(workspace, "tool5_summary")
+    mut_dir = os.path.join(workspace, "saturation_mutagenesis")
+    sum_dir = os.path.join(workspace, "summary")
 
     ddg_count = len(glob.glob(f"{mut_dir}/*.ddg")) if os.path.exists(mut_dir) else 0
     summary_file = os.path.join(sum_dir, "ddg_results.txt")
@@ -246,7 +271,11 @@ def progress_poll_node(state: AgentState, config=None, **kwargs):
 
     time.sleep(PROGRESS_INTERVAL)
 
-    msg = HumanMessage(content=progress_text, name="ProgressReporter")
+    msg = HumanMessage(
+        content=progress_text,
+        name="ProgressReporter",
+        id="progress_poll_status",  # 固定 id：add_messages reducer 自动覆盖，避免 60 条轮询消息累积
+    )
 
     return {
         "messages": [msg],
@@ -277,6 +306,7 @@ STEP1_SYSTEM = (
 STEP2_SYSTEM = (
     "你是【弛豫阶段】执行 Agent。"
     "任务：调用 run_cartesian_relax 对清洗后的复合物结构进行 Cartesian 弛豫。"
+    "参数：本步骤固定 nstruct=3；严禁读取或使用用户参数中的「并发数/延迟」字段——那是给 STEP3 饱和突变阶段用的，本阶段一律不参考。"
     "权限：你只能调用系统为你绑定的工具；调用完成后请直接结束本轮。"
     "若工具返回【执行报错】，系统会自动进入修复分支。"
 )
@@ -559,7 +589,7 @@ def skempi_eval_node(state: AgentState, config=None, **kwargs):
     1. 从 config.thread_id 解析 PDB ID
     2. 调 evaluate_against_skempi.func(pdb_id, ddg_path) → 蛋白-蛋白 ΔΔG vs 实验 ΔΔG Pearson
     3. 调 evaluate_against_pdbbind.func(pdb_ids, score_paths) → 蛋白-小分子 Rosetta score vs 实验 Kd Spearman
-    4. 把两份报告合并为 HumanMessage(name="BindingDirector") 追加
+    4. 把两份报告合并为 HumanMessage(name="BindingDirector") 追加，并落盘 summary/binding_eval_report.txt
     """
     if not config or "configurable" not in config:
         msg = HumanMessage(content="【实验对照】无 task_id，跳过评估", name="BindingDirector")
@@ -599,6 +629,16 @@ def skempi_eval_node(state: AgentState, config=None, **kwargs):
         reports.append(f"【蛋白-小分子对照】{sc_path} 不存在，跳过 PDBbind 评估（未跑完弛豫？）")
 
     combined = "\n\n" + "─" * 60 + "\n\n".join(reports)
+
+    # 报告落盘到 summary/binding_eval_report.txt（随结果 zip 一起交付）
+    try:
+        report_dir = os.path.join(workspace, "summary")
+        os.makedirs(report_dir, exist_ok=True)
+        with open(os.path.join(report_dir, "binding_eval_report.txt"), "w", encoding="utf-8") as f:
+            f.write(combined.strip())
+    except Exception:
+        pass  # 落盘失败不影响主流程
+
     msg = HumanMessage(content=f"📊 {combined}", name="BindingDirector")
     return {"messages": [msg]}
 
@@ -646,8 +686,8 @@ def package_results(task_id):
         return None, "❌ 找不到任务目标，请先提交执行一次突变任务。"
 
     task_dir = os.path.join("output", task_id)
-    summary_file = os.path.join(task_dir, "tool5_summary", "ddg_results.txt")
-    mut_dir = os.path.join(task_dir, "tool4_mut_results")
+    summary_file = os.path.join(task_dir, "summary", "ddg_results.txt")
+    mut_dir = os.path.join(task_dir, "saturation_mutagenesis")
 
     if not os.path.exists(summary_file) and not os.path.exists(mut_dir):
         return None, f" 未在 {task_dir} 下找到计算结果文件。"
@@ -659,7 +699,7 @@ def package_results(task_id):
     try:
         zip_filename = f"{task_id}_results.zip"
         with zipfile.ZipFile(zip_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for folder_name in ["tool5_summary", "tool4_mut_results"]:
+            for folder_name in ["summary", "saturation_mutagenesis", "disorder"]:
                 target_folder = os.path.join(task_dir, folder_name)
                 if os.path.exists(target_folder):
                     for root, _, files in os.walk(target_folder):
