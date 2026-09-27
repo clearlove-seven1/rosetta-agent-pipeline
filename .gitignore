@@ -15,7 +15,8 @@ __pycache__/
 # Learn / experiment directories
 learn_*/
 learn_*/**
-
+*_learning
+*_learning/**
 # Input data (large files)
 ligand
 ligand.*
@@ -31,7 +32,7 @@ protein/**
 test_*
 test_*/
 test_*.py
-
+eval_context_changes.py
 # Gradio cache
 .gradio/
 
