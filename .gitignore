@@ -51,3 +51,8 @@ chroma_db/
 .vscode/
 .idea/
 .DS_Store
+
+# Local study docs (keep local only, do not push)
+详解rosetta-agent/
+Rosetta详解/
+GIT_CHEATSHEET.md
