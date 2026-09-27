@@ -12,6 +12,7 @@
 rosetta-agent/
 ├── rosetta_agent.py        # 主程序：LangGraph 图 + Gradio Web / CLI 入口
 ├── rosetta_tools.py        # 底层工具：Rosetta / PyMOL / SKEMPI / PDBbind / RAG
+├── rosetta_mcp_server.py   # MCP Server：12 原子工具 + 3 管理工具暴露给 Claude Desktop / Cursor / Trae
 ├── run_cli.sh              # 批量 CLI 驱动 (循环 inputs/pdbs/*.pdb)
 ├── setup_blackwell.sh      # Blackwell GPU 服务器上的 torch cu128 一键切换
 ├── environment.yml         # Conda 环境 (Python 3.10 + langchain/langgraph/gradio …)
@@ -132,10 +133,10 @@ output/
     ├── ligand.pdb / ligand.mol2
     ├── parameterize_ligand/         # .params / .mol2 / *_0001.pdb
     ├── cartesian_relax/             # wt_relaxed.pdb / score.sc / *.log
-    ├── tool4_mut_results/           # .ddg / run_ddg.py / run_launcher.log
-    └── tool5_summary/
+    ├── saturation_mutagenesis/      # .ddg / run_ddg.py / run_launcher.log
+    ├── disorder/                    # disorder_scores.csv（ESM-2 全量分数）
+    └── summary/
         ├── ddg_results.txt
-        ├── disorder.csv             # ESM-2 全量 disorder 分数
         └── binding_eval_report.txt  # SKEMPI + PDBbind 对照
 ```
 
@@ -213,13 +214,38 @@ bash run_cli.sh
 
 `run_cli.sh` 内部就是上面这条命令的循环。
 
+### 8.4 MCP（接入 Claude Desktop / Cursor / Trae）
+
+```bash
+pip install mcp    # 已列入 environment.yml
+python rosetta_mcp_server.py                                  # stdio 模式（本地接入默认）
+python rosetta_mcp_server.py --transport sse --port 8000     # SSE 模式（远程接入）
+```
+
+客户端配置（Claude Desktop 的 `claude_desktop_config.json` 或 Cursor 的 `.cursor/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "rosetta-agent": {
+      "command": "/home/xxx/.conda/envs/rosetta-agent/bin/python",
+      "args": ["/abs/path/to/rosetta_mcp_server.py"]
+    }
+  }
+}
+```
+
+暴露内容：**12 个原子工具**（与 LangGraph 共用同一实现，零逻辑重复）+ **3 个管理工具**（`create_task` 建任务、`list_tasks` 看产物状态、`set_workspace` 切工作区）。客户端 LLM 直接编排三段流水线：
+
+`create_task → parameterize_ligand → run_cartesian_relax → predict_disorder → run_saturation_mutagenesis → evaluate_against_skempi / evaluate_against_pdbbind`
+
 ---
 
 ## 9. 排错
 
 | 现象 | 排查方向 |
 |---|---|
-| `.ddg` 文件 0 字节 | 看 `tool4_mut_results/run_launcher.log`，多半并发过大打挂 Rosetta |
+| `.ddg` 文件 0 字节 | 看 `saturation_mutagenesis/run_launcher.log`，多半并发过大打挂 Rosetta |
 | 弛豫中途 `score.sc` 写不出来 | `cartesian_relax/` 下 `score_*.sc` 是不是 3 个都在 |
 | 报"找不到 .params" | 确认 `parameterize_ligand/` 里有 `.params` 落盘 + 目录权限 |
 | SKEMPI 报"未找到 PDB XXX" | 该 PDB 不在 SKEMPI 收录范围（SKEMPI 只有蛋白-蛋白相互作用） |
