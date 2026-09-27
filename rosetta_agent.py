@@ -6,7 +6,6 @@ import datetime
 import traceback
 import time
 from dotenv import load_dotenv
-import uuid
 
 from rosetta_tools import current_workspace, get_workspace_path
 
@@ -795,7 +794,7 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
 
         final_prompt = " | ".join(prompt_parts)
         if not final_prompt:
-            yield history, "", error_box
+            yield history, "", error_box, task_id
             return
 
         config = {"configurable": {"thread_id": task_id}}
@@ -972,7 +971,7 @@ with gr.Blocks() as demo:
             ligand_input = gr.File(label="上传预对接配体 (.pdb, 保持原位三维坐标)", file_types=[".pdb", ".mol2"])
 
             mutation_mode = gr.Radio(
-                choices=["单位点突变(普通) ", "多位点连续突变 (批量)"],
+                choices=["单位点突变 (普通)", "多位点连续突变 (批量)"],
                 value="单位点突变 (普通)",
                 label=" 执行模式",
             )

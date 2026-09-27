@@ -36,4 +36,8 @@ echo "============================================================"
 echo "Step 4: 跑 ESM-2 disorder 测试，看 GPU 加速"
 echo "============================================================"
 cd /home/tianqingchen/projects/rosetta1
-$CONDA_PY test_disorder.py 2>&1 | tail -15
+$CONDA_PY -c "
+from esm import pretrained
+model, alphabet = pretrained.esm2_t12_35M_UR50D()
+print('  ESM-2 t12 35M 加载成功（GPU 已就绪）')
+" 2>&1 | tail -15

@@ -23,9 +23,10 @@ rosetta-agent/
 │   └── ligand/
 ├── output/                 # 运行产物 (每个任务一个 task_YYYYMMDD_HHMM_<PDB>/)
 └── rosetta_manuals/        # RAG 语料 + 实验数据库
+    ├── rosetta_docs/                 # RosettaCommons/documentation 官方文档（relax/cartesian-ddG/打分/排错…）
     ├── 报错解决笔记.txt
     ├── skempi_v2.csv                 # 蛋白-蛋白 ΔΔG (~7k 条)
-    └── pdbbind_v2020.csv             # 蛋白-小分子 Kd (~24k 条)
+    └── pdbbind_v2020.csv             # 蛋白-小分子 Kd/Ki/IC50（源自 PDBbind 2020，~19k 条）
 ```
 
 ---
@@ -260,4 +261,5 @@ python rosetta_mcp_server.py --transport sse --port 8000     # SSE 模式（远�
 - [ESM-2 (Meta FAIR)](https://github.com/facebookresearch/esm) — 蛋白质语言模型 disorder 预测
 - [SKEMPI 2.0](https://life.bsc.es/pid/skempi2) — 蛋白-蛋白 ΔΔG 实验数据库
 - [PDBbind v2020](http://www.pdbbind.org.cn/) — 蛋白-小分子 Kd 实验数据库
+- [Leak-Proof PDBBind](https://github.com/THGLab/LP-PDBBind) — `pdbbind_v2020.csv` 的数据来源（重新整理的 PDBbind 2020 亲和力）
 - [LangChain / LangGraph](https://langchain-ai.github.io/langgraph/) — Agent 框架
