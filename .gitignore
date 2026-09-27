@@ -41,6 +41,7 @@ output/
 build/
 dist/
 *.egg-info/
+chroma_db/
 
 # Local backups
 *.mock_backup

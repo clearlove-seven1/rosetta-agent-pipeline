@@ -536,28 +536,40 @@ def diagnose_and_fix(tool_name: str) -> str:
 
 @tool  
 def auto_repair() -> str:
-    """自动修复工具：检测并修复 saturation_mutagenesis 下的 auto_clean.py 解析问题。"""
+    """自动修复工具：检测 saturation_mutagenesis 的汇总产物，必要时重跑 auto_clean.py 重建 ddg_results.txt。
+
+    说明：auto_clean.py 每次运行饱和突变时都会重新生成（覆盖），因此本工具不改其代码，
+    而是诊断「.ddg 已生成但 ddg_results.txt 缺失/为空」并尝试重跑汇总。
+    """
     mut_dir = get_workspace_path("saturation_mutagenesis")
+    sum_dir = get_workspace_path("summary")
     cleaner_path = os.path.join(mut_dir, "auto_clean.py")
+    result_file = os.path.join(sum_dir, "ddg_results.txt")
+
+    ddg_files = glob.glob(os.path.join(mut_dir, "*.ddg"))
+    if not ddg_files:
+        return "【诊断】saturation_mutagenesis 下没有 .ddg 文件，突变计算尚未产生结果，无需修复。"
+
+    if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
+        with open(result_file, encoding="utf-8") as f:
+            n = len(f.readlines()) - 1
+        if n > 0:
+            return f"【无需修复】ddg_results.txt 已含 {n} 条结果。"
+
     if not os.path.exists(cleaner_path):
-        return "【修复失败】未找到 auto_clean.py"
-    
-    with open(cleaner_path, 'r') as f:
-        content = f.read()
-    
-    if "'mut' in lp[0]" in content or "lp[-1]" in content:
-        fixed_content = content.replace(
-            "if len(lp) >= 3 and ('mut' in lp[0] or 'rep' in lp[0]):",
-            "if len(lp) >= 3 and ('MUT' in ' '.join(lp) or 'COMPLEX' in lp[0]):"
-        ).replace(
-            "scores.append(float(lp[-1]))",
-            "scores.append(float(lp[5]))"
+        return "【修复失败】找到 .ddg 但未找到 auto_clean.py（突变任务可能中断在写汇总前）"
+    try:
+        r = subprocess.run(
+            "python auto_clean.py", cwd=mut_dir, shell=True,
+            capture_output=True, text=True, timeout=120,
         )
-        with open(cleaner_path, 'w') as f:
-            f.write(fixed_content)
-        return "【自动修复成功】已修复 auto_clean.py 的解析逻辑。请重新运行 python auto_clean.py。"
-    
-    return "【无需修复】auto_clean.py 解析逻辑已正确。"
+        if os.path.exists(result_file) and os.path.getsize(result_file) > 0:
+            with open(result_file, encoding="utf-8") as f:
+                n = len(f.readlines()) - 1
+            return f"【自动修复成功】重跑 auto_clean.py，重建 ddg_results.txt（{n} 条）。"
+        return f"【修复失败】重跑 auto_clean.py 后 ddg_results.txt 仍为空。stderr: {r.stderr[-300:]}"
+    except Exception as e:
+        return f"【修复失败】重跑 auto_clean.py 出错: {e}"
 
 
 # ==========================================
@@ -908,6 +920,27 @@ def _predict_disorder_heuristic(residues):
     return disorder
 
 
+_ESM_CACHE = {}
+
+
+def _load_esm2():
+    """加载并缓存 ESM-2 t12 35M 模型（模块级单例，避免同一进程内重复初始化）。
+
+    predict_disorder / predict_disorder_struct 都会被 disorder_check 节点连续调用，
+    若每次都重新初始化 35M 模型会重复耗时并占用内存。
+    """
+    if "model" not in _ESM_CACHE:
+        import esm
+        import torch
+        model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
+        model.eval()
+        if torch.cuda.is_available():
+            model = model.cuda()
+        _ESM_CACHE["model"] = model
+        _ESM_CACHE["alphabet"] = alphabet
+    return _ESM_CACHE["model"], _ESM_CACHE["alphabet"]
+
+
 def _predict_disorder_esm2(sequence, residues):
     """用 ESM-2 蛋白质语言模型推理 disorder 概率
 
@@ -916,17 +949,14 @@ def _predict_disorder_esm2(sequence, residues):
 
     返回 ({chain: {resnum: disorder_score}}, method_used)
     """
-    import esm
     import torch
 
-    # 用 35M 模型（快且准），没有 GPU 也跑得动
-    model, alphabet = esm.pretrained.esm2_t12_35M_UR50D()
-    model.eval()
+    # 用 35M 模型（快且准），没有 GPU 也跑得动；模块级缓存避免重复初始化
+    model, alphabet = _load_esm2()
     batch_converter = alphabet.get_batch_converter()
 
     _, _, batch_tokens = batch_converter([("protein", sequence)])
     if torch.cuda.is_available():
-        model = model.cuda()
         batch_tokens = batch_tokens.cuda()
 
     with torch.no_grad():
@@ -1290,42 +1320,105 @@ def evaluate_against_pdbbind(pdb_ids: str, score_paths: str = "") -> str:
 # ==========================================
 # 4. RAG 文档检索工具
 # ==========================================
-DOCS_DIR = "rosetta_manuals" 
+DOCS_DIR = "rosetta_manuals"
+
+
+def _load_doc_chunks():
+    """加载 rosetta_manuals 下全部 .txt/.md 语料（递归子目录）并切块。
+
+    语料来源：rosetta_docs/ 下的 RosettaCommons/documentation 官方文档 + 本地报错笔记。
+    """
+    docs = []
+    for root, _dirs, files in os.walk(DOCS_DIR):
+        for fn in sorted(files):
+            if not fn.lower().endswith((".txt", ".md")):
+                continue
+            path = os.path.join(root, fn)
+            try:
+                docs.extend(TextLoader(path, encoding="utf-8").load())
+            except Exception:
+                continue
+    if not docs:
+        return []
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=60)
+    return text_splitter.split_documents(docs)
+
+
+def init_bm25_retriever():
+    """构建 BM25 本地关键词检索器（零 API 依赖，主检索方案）。
+
+    对 Rosetta 报错代码/参数名这类场景，关键词精确匹配往往比向量检索更可靠。
+    """
+    try:
+        from langchain_community.retrievers import BM25Retriever
+        splits = _load_doc_chunks()
+        if not splits:
+            print("⚠️ RAG：rosetta_manuals 下未找到 .txt/.md 语料，检索不可用")
+            return None
+        return BM25Retriever.from_documents(splits, k=4)
+    except Exception as e:
+        print(f"⚠️ RAG：BM25 检索器构建失败: {e}")
+        return None
+
 
 def init_vector_db():
-    """初始化并构建向量数据库"""
-    # 让 Embeddings 也使用 .env 里配置好的 API Key 和代理 URL
-    embeddings = OpenAIEmbeddings(
-        api_key=os.getenv("LLM_API_KEY", ""),
-        base_url=os.getenv("LLM_BASE_URL", "")
-        # 如果你的中转 API 报错找不到默认模型，可以取消下面这行的注释并指定模型名称
-    )
-    
-    if os.path.exists("chroma_db"):
-        return Chroma(persist_directory="chroma_db", embedding_function=embeddings)
-    
-    # 确保文档存在再加载
-    guide_path = f"{DOCS_DIR}/rosetta_cartesian_relax_guide.txt"
-    if os.path.exists(guide_path):
-        loader = TextLoader(guide_path, encoding="utf-8")
-        docs = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        splits = text_splitter.split_documents(docs)
-        return Chroma.from_documents(documents=splits, embedding=embeddings, persist_directory="chroma_db")
+    """构建向量数据库（可选增强；embedding API 不可用时优雅降级为 None）"""
+    try:
+        # 让 Embeddings 使用 .env 里配置好的 API Key 和代理 URL；
+        # 中转站不支持 embedding 或需指定模型时，可在 .env 设 EMBEDDING_MODEL
+        embeddings_kwargs = dict(
+            api_key=os.getenv("LLM_API_KEY", ""),
+            base_url=os.getenv("LLM_BASE_URL", ""),
+        )
+        emb_model = os.getenv("EMBEDDING_MODEL", "").strip()
+        if emb_model:
+            embeddings_kwargs["model"] = emb_model
+        embeddings = OpenAIEmbeddings(**embeddings_kwargs)
+
+        if os.path.exists("chroma_db"):
+            return Chroma(persist_directory="chroma_db", embedding_function=embeddings)
+
+        splits = _load_doc_chunks()
+        if splits:
+            return Chroma.from_documents(documents=splits, embedding=embeddings, persist_directory="chroma_db")
+    except Exception as e:
+        print(f"⚠️ 向量库构建失败（embedding API 不可用，回退到 BM25）: {e}")
+        # 清理构建失败留下的空/损坏缓存
+        try:
+            if os.path.isdir("chroma_db"):
+                shutil.rmtree("chroma_db")
+        except Exception:
+            pass
     return None
 
+
+bm25_retriever = init_bm25_retriever()
 vector_db = init_vector_db()
+
 
 @tool
 def search_rosetta_docs(query: str) -> str:
-    """RAG 检索工具：当遇到未知的 Rosetta 参数、报错代码，输入明确疑问句调用此工具。"""
-    if not vector_db:
-         return "【系统提示】向量数据库未初始化或文档目录不存在。"
-    try:
-        docs = vector_db.similarity_search(query, k=3)
-        if not docs:
-            return "【检索结果】知识库中未找到相关内容。"
-        context = "\n---\n".join([doc.page_content for doc in docs])
-        return f"【检索成功】以下是来自 Rosetta 知识库的参考资料：\n{context}"
-    except Exception as e:
-        return f"【检索异常】{str(e)}"
+    """RAG 检索工具：检索 Rosetta 官方文档/报错笔记，遇到未知的参数、报错代码、用法时调用。"""
+    docs = []
+    source = None
+
+    # 1. 优先向量语义检索（embedding API 可用时）
+    if vector_db is not None:
+        try:
+            docs = vector_db.similarity_search(query, k=4)
+            source = "向量检索"
+        except Exception:
+            docs = []
+
+    # 2. 回退到 BM25 本地关键词检索（零 API 依赖）
+    if not docs and bm25_retriever is not None:
+        try:
+            docs = bm25_retriever.invoke(query)
+            source = "BM25 关键词检索"
+        except Exception:
+            docs = []
+
+    if not docs:
+        return "【检索结果】Rosetta 知识库中未找到相关内容（请检查 rosetta_manuals 语料）。"
+    context = "\n---\n".join(d.page_content[:1500] for d in docs)
+    return f"【检索成功·{source}】以下是 Rosetta 知识库的参考资料：\n{context}"
