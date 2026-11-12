@@ -111,8 +111,14 @@ def set_result(run_dir: str, manifest: dict, result: dict) -> dict:
     return manifest
 
 
+_last = {"run_dir": None, "manifest": None}
+
+
 def save(run_dir: str, manifest: dict) -> str:
     path = os.path.join(run_dir, "manifest.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
+    # 记录最近一次落盘上下文：供 CLI 兜底在未预期崩溃时如实写回状态
+    _last["run_dir"] = run_dir
+    _last["manifest"] = manifest
     return path

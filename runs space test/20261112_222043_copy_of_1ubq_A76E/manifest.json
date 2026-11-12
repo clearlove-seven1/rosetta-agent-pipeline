@@ -1,0 +1,147 @@
+{
+  "schema": "workbench-manifest/0.2",
+  "workbench_version": "0.2.0a0",
+  "run_id": "20261112_222043_copy_of_1ubq_A76E",
+  "status": "succeeded",
+  "status_history": [
+    {
+      "status": "created",
+      "time": "2026-11-12T22:20:43"
+    },
+    {
+      "status": "validated",
+      "time": "2026-11-12T22:20:43"
+    },
+    {
+      "status": "succeeded",
+      "time": "2026-11-12T22:22:33"
+    }
+  ],
+  "task": {
+    "name": "space_test",
+    "note": "",
+    "calc_type": "单体单点突变稳定性计算 (cartesian_ddg 常规模式)",
+    "protein_path": "/tmp/wb space test/copy of 1ubq.pdb",
+    "protein_sha256": "d4a6812d8951cf6594e6a0763f089e35f5a80b62acb3c117b2c5565228a7b161",
+    "chain": "A",
+    "resnum_pdb": 76,
+    "insertion_code": " ",
+    "wt_aa": "G",
+    "mut_aa": "E",
+    "seq_index": 76,
+    "cleaned_protein": "runs space test/20261112_222043_copy_of_1ubq_A76E/inputs/clean_protein.pdb",
+    "cleaned_protein_sha256": "f011608ef7b842701fddf4b3beb320e0037ee9c2d89c526061776fde058fd8c7",
+    "prep_note": "剥离 HETATM/水（保留 602 个蛋白原子行）；原始输入文件未修改。剥离对象：无，另去除 58 个水"
+  },
+  "software": {
+    "python": "3.10.20",
+    "rosetta": "Rosetta version: rosetta.source.release-280 r280 2021.16+release.8ee4f02 8ee4f02ac5768a8a339ffada74cb0ff5f778b3e6 https://www.rosettacommons.org 2021-04-20T20:57:38.289184",
+    "rosetta_bin_dir": "/opt/software/rosetta/main/source/bin",
+    "git_commit": "0f42ca48da1e372da7f88fa51c5c5afa52613611"
+  },
+  "config": {
+    "seed": 1111111,
+    "nstruct": 1,
+    "ddg_iterations": 3,
+    "score_function": "ref2015_cart",
+    "timeout_relax_s": 1800,
+    "timeout_ddg_s": 3600
+  },
+  "steps": {
+    "relax": {
+      "status": "succeeded",
+      "duration_s": 102.6,
+      "returncode": 0,
+      "command": [
+        "/opt/software/rosetta/main/source/bin/relax.linuxgccrelease",
+        "-s",
+        "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/inputs/clean_protein.pdb",
+        "-relax:cartesian",
+        "-score:weights",
+        "ref2015_cart",
+        "-relax:min_type",
+        "lbfgs_armijo_nonmonotone",
+        "-relax:constrain_relax_to_start_coords",
+        "-relax:coord_constrain_sidechains",
+        "-use_input_sc",
+        "-ignore_unrecognized_res",
+        "-ignore_zero_occupancy",
+        "-missing_density_to_jump",
+        "-nstruct",
+        "1",
+        "-run:constant_seed",
+        "-run:jran",
+        "1111111",
+        "-out:path:all",
+        "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/relax",
+        "-out:prefix",
+        "relaxed_",
+        "-out:file:scorefile",
+        "score.sc"
+      ],
+      "relaxed_pdb": "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/relax/relaxed_in_0001.pdb",
+      "relaxed_pdb_sha256": "90341b4064e549e684453e8fced66947ef44450736ee9db91291393a1e3c70a0",
+      "log": "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/relax/relax.log",
+      "resource": {
+        "cpu_time_s": 102.5,
+        "peak_rss_children_mb": 447.0
+      },
+      "start_time": "2026-11-12T22:22:26"
+    },
+    "numbering_check": {
+      "status": "succeeded",
+      "detail": "弛豫前后 76 个残基顺序一致",
+      "start_time": "2026-11-12T22:22:26"
+    },
+    "cartesian_ddg": {
+      "status": "succeeded",
+      "duration_s": 7.5,
+      "returncode": 0,
+      "command": [
+        "/opt/software/rosetta/main/source/bin/cartesian_ddg.linuxgccrelease",
+        "-s",
+        "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/relax/relaxed_in_0001.pdb",
+        "-ddg:mut_file",
+        "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/ddg/mutfile.txt",
+        "-ddg:iterations",
+        "3",
+        "-ddg:cartesian",
+        "-ddg:dump_pdbs",
+        "false",
+        "-ddg:bbnbrs",
+        "1",
+        "-score:weights",
+        "ref2015_cart",
+        "-relax:min_type",
+        "lbfgs_armijo_nonmonotone",
+        "-relax:cartesian",
+        "-run:constant_seed",
+        "-run:jran",
+        "1111111",
+        "-out:prefix",
+        "ddg_"
+      ],
+      "ddg_file": "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/ddg/mut.ddg",
+      "ddg_file_sha256": "b39b2d787c9fcb5fff7388f363876668c7c679523cdb5598b91944b6edc1dd75",
+      "log": "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/ddg/ddg.log",
+      "resource": {
+        "cpu_time_s": 7.2,
+        "peak_rss_children_mb": 447.0
+      },
+      "start_time": "2026-11-12T22:22:33"
+    }
+  },
+  "result": {
+    "ddg_reu": 1.086,
+    "wt_avg_reu": -274.029,
+    "mut_avg_reu": -272.943,
+    "n_rounds": 3,
+    "direction": "destabilizing",
+    "label_check": "passed",
+    "ddg_file": "/home/tianqingchen/projects/rosetta1/runs space test/20261112_222043_copy_of_1ubq_A76E/ddg/mut.ddg",
+    "units": "REU",
+    "calc_type": "cartesian_ddg 常规稳定性模式",
+    "finished_time": "2026-11-12T22:22:33"
+  },
+  "scope_and_limits": "任务类型: 单体蛋白指定单点突变稳定性计算\nProtocol: relax (cartesian, ref2015_cart) → cartesian_ddg (常规模式, 非界面模式)\n输出量: ΔΔG = avg(MUT) - avg(WT)，单位 REU（Rosetta Energy Units，非 kcal/mol）\n方向约定: ΔΔG > 0 倾向去稳定化；ΔΔG < 0 倾向稳定化\n边界: 本结果是计算筛选参考，不等于实验验证，不能外推为结合亲和力"
+}
