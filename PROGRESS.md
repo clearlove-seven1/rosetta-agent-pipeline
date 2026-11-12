@@ -1,0 +1,117 @@
+# PROGRESS — Protein Design Workbench
+
+> 依据 PROTEIN_WORKBENCH_PLAN.md §11 维护。**只有验收证据齐全才标"已完成"。**
+> 当前主线：在 rosetta-agent 基础上渐进升级；学习目录（learn_*/alphafold_learning 等）不在本计划范围。
+
+## 进度总表
+
+| 阶段 | 状态 | 计划日期 | 实际日期 | 证据 / 文件 | 阻塞 |
+|---|---|---|---|---|---|
+| v0.0 基线盘点 | **待验证** | 2026-11 第 1 周 | 2026-11-12 | `docs/current_state.md`；本机环境实测数据 | 等用户核对 §9 待确认清单 |
+| v0.1 科学纠偏 | **待验证** | 2026-11 第 2 周 | 2026-11-12 | git diff（4 文件）+ `eval_v01_guardrails.py` 26/26 通过 | 等用户抽查验收 |
+| v0.2 CLI MVP | **进行中（核心已通）** | 2026-11 第 3-4 周 | 2026-11-12 | `workbench/` 包 + 单测 24/24 + **1UBQ G76E 真实跑通**（ΔΔG=+1.086 REU，报告/manifest 齐全） | 等用户验收；批量驱动与 README 用例未写 |
+| v0.3 可靠运行 | 未开始 | 待填写 | — | — | — |
+| v0.4 科学评测 | 未开始 | 待填写 | — | — | 评测数据许可待确认 |
+| v0.5 GROMACS | 未开始 | 待填写 | — | **实测：已装 2026.1（/opt/software，GPU CUDA 构建）**，cuFFT 11 链接断裂待修 | 修复方案待用户选择（§9） |
+| v0.6 Agent / 界面 | 未开始 | 待填写 | — | — | — |
+| v1.0 发布候选 | 未开始 | 待填写 | — | — | — |
+
+**状态定义**：未开始 / 进行中 / 阻塞 / 待验证 / 已完成。
+
+---
+
+## 工作日志
+
+### 2026-11-12 ｜ 任务：v0.0-01 基线盘点
+- **本次目标**：只读盘点代码、环境、现状与风险，不修改任何逻辑。
+- **修改文件**：无（纯只读检查）。新增 `PROTEIN_WORKBENCH_PLAN.md`（规划文档入仓）、`docs/current_state.md`（盘点报告）、`PROGRESS.md`（本文件）。
+- **实际完成**：
+  - 环境实测：Ubuntu 22.04.5 / 2×EPYC 9965（768 线程）/ 502G 内存 / 磁盘余 796G / 2×RTX PRO 5000 72GB（驱动 580.173.02）/ 无 Slurm / **gmx 未安装** / rosetta-agent env（Py 3.10.20）完好 / Rosetta 与 PyMOL 路径验证可用 / `molfile_to_params.py` 在位。
+  - P0 四项科学问题全部在**实际工作副本**中定位核实（ESM-2 无 mask 取 log-prob 归一化、PDBbind min(total_score) vs 单 Kd 自动评级、cartesian_ddg 常规模式跑复合物对照 SKEMPI 结合 ΔΔG、SKEMPI key 丢链），位置与证据见 `docs/current_state.md` §4。
+  - P1 工程问题定位：shell=True 拼接 ≥13 处、后台 Popen fire-and-forget + 文件存在即"完成"、MCP 单任务全局状态。
+  - 梳理 4 个入口与调用链；确认当前**不存在无 LLM 的执行路径**（v0.2 必须补）。
+- **验证命令与结果**：`git rev-parse HEAD`=1945a14、`git status --short` 干净；`uname`/`lscpu`/`free`/`df`/`nvidia-smi`/`command -v gmx`（无结果）/ conda env python 版本 / Rosetta bin 与脚本 `ls` 验证。
+- **未验证**：Rosetta 版本号、ESM-2 推理实测、SKEMPI 多突变解析边界、binding_eval 跳过的精确路径、Gradio/MCP 运行时行为（见报告 §10）。
+- **发现的问题 / 根因**：预测量与对照标签不匹配是系统性口径问题，不是单点 bug；"完成"判定只看产物文件存在，无法区分失败/中断。
+- **下一步**：等用户核对 current_state.md §9 待确认清单 → 执行 v0.1（默认关闭无依据指标与评级 + 口径声明 + 针对性测试）。
+- **人工需要确认的科研问题**：v0.2 任务口径（单体稳定性 vs 复合物）；GROMACS 安装方式；测试体系选择（建议 1UBQ）。
+
+### 2026-11-12 ｜ 任务：v0.4-前置 数据许可决策（用户委托 GLM 决定）
+- **本次目标**：确认 skempi_v2.csv / pdbbind_v2020.csv 能否留在公开仓库。
+- **决定**：**均不随仓库分发**。PDBbind v2020 官方条款禁止再分发（注册下载、学术使用）；SKEMPI 2.0 学术数据库要求引用、再分发许可不明确。两者按"引用+指路"规范处理。
+- **修改文件**：`git rm --cached` 两 CSV（**本地文件保留**，v0.4 评测不受影响）；`.gitignore` 增加 `rosetta_manuals/*.csv`；新增 `docs/data_provenance.md`（来源/许可评估/数据字典/获取步骤/引用要求）。
+- **验证**：`git status` 显示 staged 删除（D）；`ls` 确认本地文件完好（2.1MB / 364KB）。
+- **⚠️ 遗留事项（需仓库所有者决策）**：提交 22367f4→1945a14（= 当前 origin/main）的历史中**这两个 CSV 已公开存在于 GitHub**。本次只保证未来不再分发；彻底清除需 `git filter-repo` 重写历史 + force push（会改写所有提交哈希；若已被 clone/fork 则副本不受影响）。要不要清历史由用户决定——**越早决定成本越低**。
+- **未验证**：官方条款原文逐字核对（基于公开共识与 LP-PDBBind 的处理方式，v1.0 发布前建议再复查官网条款页）。
+- **人工需要确认的科研问题**：无新增。
+
+### 2026-11-12 ｜ 任务：v0.2-01 workbench 核心 + 1UBQ 真实冒烟
+- **本次目标**：按用户授权的决策实施 v0.2 核心——**口径=单体蛋白指定单点突变稳定性计算（cartesian_ddg 常规模式，REU）**；测试体系=1UBQ 冒烟 + 1MC9 科研案例（用户提议 1MC9，服务器上无原始晶体结构，已从 RCSB 下载）。现有复合物流水线保留不动，workbench 为新增确定性入口。
+- **修改文件（全部新增，未动旧代码）**：`workbench/`（__init__/validation/numbering/executors/ddgparse/manifest/report/cli 七模块）、`tests/test_workbench_validation.py`、`examples/{1ubq,1mc9}/`（RCSB 原件+README）、`.gitignore` 追加 `runs/`。
+- **实际完成**：
+  - 无 LLM CLI：`python -m workbench.cli --protein … --chain A --resnum 76 --to E`
+  - 确定性执行：参数列表（无 shell=True）、独立 cwd、日志落盘、强制超时、constant_seed
+  - 状态机 created→validated→running→succeeded/failed 落盘 manifest；退出码 0/2/3/4
+  - 校验前置：链不存在/残基不存在/WT 不匹配/多 MODEL/插入码/HETATM 警告，全部在耗算力前拦截
+  - 编号安全：mutfile 用文件内顺序编号（本机 cartesian_ddg 实证行为），弛豫前后残基顺序一致性校验 + .ddg 标签交叉核对，错位即拒绝
+- **验证命令与结果**：
+  - 单元测试 `tests/test_workbench_validation.py` → **24/24**（构造 PDB 校验路径 + 实测 .ddg 格式）
+  - **真实冒烟 1UBQ G76E** → EXIT=0；relax 104s + ddg 7.4s；**ΔΔG=+1.086 REU（去稳定化，方向合理）**；标签核对 MUT_76GLU 通过；manifest 记录 Rosetta 版本（release-280 r280 2021.16+release.8ee4f02，补上了 v0.0 的"版本未知"缺口）与 git commit
+  - 依赖缺失路径 → EXIT=3 + 明确报错，无假成功
+- **过程中发现并修复**：① Rosetta `-out:path:all` 必须绝对路径（进程 cwd 已切走）；② report 层 run_id 取错 manifest 层级。两次失败均被状态机如实记录为 failed，未混入"成功"。
+- **已知特性（如实记录）**：constant_seed 使 ddg 3 轮迭代分数完全相同——可复现性优先于轮间采样方差；如需轮间独立采样，v0.3 再议（每轮不同种子）。
+- **未验证**：1MC9 案例（结构已就位未跑）；批量驱动脚本；路径含空格场景（无 shell=True，理论安全，未实测）；GROMACS mdrun（v0.5）。
+- **下一步**：用户验收 → 补批量驱动 + README 用例 → v0.3（超时/中断状态如实化、不覆盖已达成）。
+- **人工需要确认的科研问题**：1MC9 目标位点选择（建议等用户从 CBM 界面相关位点里挑）。
+
+### 2026-11-12 ｜ 任务：v0.1-02 环境决策——不迁移，直接用 rosetta-agent
+- **本次目标**：用户提出不迁移、直接用 rosetta-agent env；评估并落实。
+- **修改文件**：`configs/gromacs_env.sh`（cuFFT 路径改为指向 rosetta-agent 自带的 nvidia-cufft-cu12==11.3.3.83，即 libcufft.so.11）；删除多余的 `workbench` env（迁移中途产物，仅含裸 python，无任何包）。
+- **实际完成**：确认 rosetta-agent 是 v0.1 全部测试的验证环境（26/26 在该 env 实跑）；关键 import（langgraph/gradio/mcp/torch 2.11.0+cu128）通过；gmx 经新脚本加载 rosetta-agent 的 cufft 正常（2026.1 / GPU CUDA / cuFFT）。
+- **验证命令与结果**：`ls .../rosetta-agent/.../nvidia/cufft/lib/libcufft.so.11` 在位；`source configs/gromacs_env.sh && gmx --version` OK；python -c import 四件套 OK。
+- **未验证**：gmx 真实 mdrun 短测试（留 v0.5 首项）。
+- **发现的问题 / 根因**：迁移中触发 conda 缓存损坏（packaging-26.3 包缓存缺文件导致所有新建 env 失败），已定位并仅删除该损坏缓存条目解决——此问题与项目无关但影响以后建 env，已记录。
+- **决策与理由**：迁移无功能收益（rosetta-agent 本身就是验证环境，且自带 cuFFT 11），徒增 5GB 下载与版本漂移风险；符合计划"先固定现状、不为新环境盲目重建"的原则。`configs/requirements-frozen.txt`（171 包锁定清单）保留备查：将来若真需要独立 env 或迁移机器，按此清单 + Python 3.10.x 重建。
+- **下一步**：v0.2 前仍待用户定：① 单体 vs 复合物口径；② 测试体系（建议 1UBQ）。
+- **人工需要确认的科研问题**：无新增。
+
+### 2026-11-12 ｜ 任务：v0.1-01 科学纠偏 + 方案A GROMACS 环境
+- **本次目标**：v0.1——默认关闭无依据的指标与评级、口径声明、针对性测试；顺带执行用户已拍板的方案 A（cuFFT 修复）。
+- **修改文件**：
+  - `rosetta_tools.py`（8 处）：新增 `_env_flag/exploratory_eval_enabled/disorder_filter_enabled` 开关；SKEMPI 对照改为默认「未评测」+开启后探索性 Pearson+口径说明（预测 REU vs 实验 kcal/mol，链无关局限）；PDBbind 对照同样默认「未评测」，开启后探索性 Spearman，删除全部强/中/弱评级；disorder 系列措辞降级为「探索性信号（非 disorder 概率）」；修复实验 ΔΔG 误标 REU 的单位错误。
+  - `rosetta_agent.py`（5 处）：导入开关；`disorder_check_node` 默认关闭（记「未评估」，`disordered_sites` 恒为 []，不排除位点）；AgentState 注释同步；`skempi_eval_node` 报告加【口径声明 v0.1】头；SUMMARIZE_SYSTEM 增加"计算筛选 ≠ 实验验证"要求。
+  - `README.md`：新增第 0 节「科学口径与已知边界」；§4.4 标注评级默认停用；§5 标注 disorder 默认关闭。
+  - `.env.example`：新增两个开关说明（默认 0）。
+  - 新增 `configs/gromacs_env.sh`（方案 A）、`eval_v01_guardrails.py`（26 项断言）。
+  - 新建 conda env `workbench`（python 3.11 + `nvidia-cufft-cu12==11.3.3.83`），未动其他环境。
+- **实际完成**：v0.1 全部 5 项改动 + 方案 A 落地。
+- **验证命令与结果**：
+  - `py_compile` 三文件通过；
+  - `python eval_v01_guardrails.py` → **26/26 通过**（含真实 SKEMPI/PDBbind 样本构造、disorder 强制回退路径、源码级断言）。首跑 24/26，2 个失败为测试断言过粗（把口径说明文字误判为违规），已修断言复跑全过——代码行为本身无回退；
+  - `source configs/gromacs_env.sh && gmx --version` → 2026.1 / GPU support: CUDA / cuFFT 正常加载。
+- **未验证**：Gradio/MCP 实际运行界面效果（未启动服务）；LangGraph 全图带 LLM 的端到端（避免消耗 API）；v0.1 验收清单第 3 条"样例检查"目前覆盖工具层与源码层，UI 层未查。
+- **发现的问题 / 根因**：旧代码实验 ΔΔG 详情行误标"REU"（实际是 kcal/mol）——单位错误已修；import 时向量库构建尝试 embedding API 失败回退 BM25（既有行为，与本次改动无关，v0.3 处理）。
+- **下一步**：用户抽查 git diff 与 README 第 0 节 → 验收后进入 v0.2（需先定：单体 vs 复合物口径、测试体系）。
+- **人工需要确认的科研问题**：无新增（v0.2 口径问题沿用 §9 清单）。
+
+### 2026-11-12 ｜ 任务：v0.0-02 GROMACS 位置核实（用户指正）
+- **本次目标**：用户指出 `/opt/software/gromacs-2026.1` 已装 GROMACS，复核初检结论（`command -v gmx` 未命中）。
+- **修改文件**：`docs/current_state.md`（§3 环境表、§5 P1-6、§9、§10）、`PROGRESS.md`（v0.5 行、本日志）。初检方法局限如实修正：`command -v` 只覆盖 PATH，未扫 `/opt/software`。
+- **实际完成**：
+  - 确认 GROMACS 2026.1 安装：root 所有源码构建（2026-04-29），mixed 精度 / thread_mpi / OpenMP≤128 / **GPU support: CUDA + cuFFT** / AVX2_256 / Plumed+Colvars enabled。
+  - 发现并定位运行障碍：二进制链接 `libcufft.so.11`（CUDA 12.x cuFFT），系统现为 CUDA 13.0（仅 libcufft.so.12）→ 直接运行报错。
+  - 用用户 env `aivc-com` 内 pip nvidia 包的 libcufft.so.11 以 LD_LIBRARY_PATH 借用，`gmx --version` 完整通过（只读借用，未改任何环境）。
+  - 用户确认：不需要 Slurm，单机直跑。
+- **验证命令与结果**：`ls /opt/software/gromacs-2026.1`、`ldd gmx | grep cufft`（not found）、`gmx --version`（带 LD_LIBRARY_PATH 后成功，输出全文已留存）。
+- **未验证**：真实 GPU mdrun 短测试（v0.5 首项）；CUDA runtime 编译版本；跨节点/多卡行为。
+- **发现的问题 / 根因**：CUDA 大版本升级（12→13）后 cuFFT soname 变更，共享安装未随之重链；跨 env 借库只能验证、不能作为生产方案。
+- **下一步**：用户在 §9 三方案中选一（推荐 A：workbench 自建 env 固化 libcufft=11，runner 显式注入并记 manifest）。
+- **人工需要确认的科研问题**：无新增。
+
+---
+
+## 每周复盘（每周五追加）
+
+1. 本周新增了哪个可运行或可验证的成果？
+2. 本周发现哪个假设不成立，修改了什么？
+3. 下周是否仍在围绕一个明确科研问题推进？
