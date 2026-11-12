@@ -56,3 +56,5 @@ chroma_db/
 详解rosetta-agent/
 Rosetta详解/
 GIT_CHEATSHEET.md
+runs/
+rosetta_manuals/*.csv
