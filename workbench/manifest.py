@@ -39,8 +39,8 @@ def now_iso() -> str:
 
 
 def new_run_id(pdb_stem: str, chain: str, resnum: int, mut_aa1: str) -> str:
-    """如 20261112_2145_1ubq_A76E；仅含 [A-Za-z0-9_.-]，路径安全"""
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    """如 20261112_214530_1ubq_A76E（秒级时间戳，防同分钟重跑互相覆盖）；仅含 [A-Za-z0-9_.-]"""
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = "".join(c if c.isalnum() or c in "._-" else "_" for c in pdb_stem)
     return f"{ts}_{stem}_{chain}{resnum}{mut_aa1.upper()}"
 

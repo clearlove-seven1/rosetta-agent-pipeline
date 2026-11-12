@@ -73,6 +73,10 @@ def main(argv=None) -> int:
     pdb_stem = os.path.splitext(os.path.basename(args.protein))[0]
     run_id = mf.new_run_id(pdb_stem, chain, args.resnum, mut)
     run_dir = os.path.join(args.workdir, run_id)
+    n = 2
+    while os.path.exists(run_dir):  # 双保险：目录已存在绝不覆盖，追加序号
+        run_dir = os.path.join(args.workdir, f"{run_id}_{n}")
+        n += 1
     os.makedirs(run_dir, exist_ok=True)
     task = {
         "run_id": run_id, "name": args.name, "note": args.note,
@@ -96,13 +100,34 @@ def main(argv=None) -> int:
     )
     m = mf.set_status(run_dir, m, "validated")
 
+    # ── 3.5 结构准备：剥离 HETATM/水（单体口径只算蛋白；原始输入不动，产物落 run_dir）──
+    clean_path = os.path.join(run_dir, "inputs", "clean_protein.pdb")
+    os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+    kept = 0
+    with open(summary.path, "r", encoding="utf-8", errors="replace") as fin, \
+         open(clean_path, "w", encoding="utf-8") as fout:
+        for line in fin:
+            if line.startswith("ATOM  "):
+                fout.write(line)
+                kept += 1
+        fout.write("END\n")
+    m["task"]["cleaned_protein"] = clean_path
+    m["task"]["cleaned_protein_sha256"] = mf.sha256(clean_path)
+    m["task"]["prep_note"] = (
+        f"剥离 HETATM/水（保留 {kept} 个蛋白原子行）；原始输入文件未修改。"
+        f"剥离对象：{dict(summary.hetatm_resnames) if summary.hetatm_resnames else '无'}"
+        + (f"，另去除 {summary.n_water} 个水" if summary.n_water else "")
+    )
+    mf.save(run_dir, m)
+    print(f"[workbench] 结构准备: 剥离配体/水 → inputs/clean_protein.pdb ({kept} 原子行)")
+
     # ── 4. relax ──
     relax_dir = os.path.join(run_dir, "relax")
     print(f"[workbench] relax 中… (nstruct={args.nstruct}, seed={args.seed})")
     m = mf.set_status(run_dir, m, "running")
     m = mf.record_step(run_dir, m, "relax", {"start_time": mf.now_iso()})
     try:
-        r = executors.run_relax(summary.path, relax_dir, args.seed,
+        r = executors.run_relax(clean_path, relax_dir, args.seed,
                                 nstruct=args.nstruct, timeout=args.timeout_relax)
     except executors.ExecutorError as e:
         mf.record_step(run_dir, m, "relax", {"status": "failed", "error": str(e)[:2000]})
@@ -119,7 +144,7 @@ def main(argv=None) -> int:
     print(f"[workbench] relax 完成 ({r['duration_s']}s): {os.path.basename(r['relaxed_pdb'])}")
 
     # ── 5. 弛豫前后顺序编号一致性校验（防 mutfile 错位）──
-    same, msg = executors.check_seq_numbering_unchanged(summary.path, r["relaxed_pdb"])
+    same, msg = executors.check_seq_numbering_unchanged(clean_path, r["relaxed_pdb"])
     if not same:
         mf.record_step(run_dir, m, "numbering_check", {"status": "failed", "detail": msg})
         mf.set_status(run_dir, m, "failed")
