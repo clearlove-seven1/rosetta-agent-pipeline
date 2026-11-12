@@ -58,3 +58,7 @@ Rosetta详解/
 GIT_CHEATSHEET.md
 runs/
 rosetta_manuals/*.csv
+
+# Workbench exceptions (v0.2): 测试套件与小型示例结构（wwPDB 数据允许署名再分发）
+!tests/**/*.py
+!examples/**/*.pdb
