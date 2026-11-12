@@ -38,6 +38,7 @@ from rosetta_tools import (
     evaluate_against_pdbbind,
     predict_disorder,
     predict_disorder_struct,
+    disorder_filter_enabled,
     DISORDER_THRESHOLD,
 )
 
@@ -134,8 +135,8 @@ class AgentState(TypedDict):
     - retry_count      : 当前失败步骤已重试次数，达到 MAX_RETRIES 强制退出
     - progress_polls   : progress_poll 节点自循环计数（达到 MAX_PROGRESS_POLLS 强制退出）
     - progress_done    : progress_poll 检测到后台任务完成的标记
-    - disordered_sites : ESM-2 disorder ≥ 阈值 的位点（["A_76", ...]），供 step3 警告注入
-    - disorder_scores  : 全量 disorder 分数 {chain: {resnum: score}}，落盘 CSV 同源
+    - disordered_sites : ESM-2 探索性信号 ≥ 阈值 的位点（["A_76", ...]）；v0.1 默认关闭，恒为 []，不自动排除位点
+    - disorder_scores  : 全量启发式分数 {chain: {resnum: score}}（仅显式开启时有值），落盘 CSV 同源
     """
     messages: Annotated[list, add_messages]
     intent: str
@@ -414,18 +415,33 @@ def build_pipeline_subgraph():
         {"disorder_check": "disorder_check", "repair": "repair"},
     )
 
-    # disorder_check 节点：ESM-2 给每个残基打 disorder 分，结果写到 state
+    # disorder_check 节点（v0.1）：默认关闭 —— ESM-2 分数未经无序预测验证，不自动过滤位点
     def disorder_check_node(state: AgentState, config=None, **kwargs):
-        """确定性节点：调 predict_disorder.func()（人读报告）+ predict_disorder_struct()（机器读 + 落盘 CSV）
+        """确定性节点。默认（WB_DISORDER_FILTER_ENABLED=0）记「未评估」，不推理、不排除任何位点；
+        显式开启后调用 predict_disorder / predict_disorder_struct，结果仅作探索性信号展示。
 
-        落盘位置：<workspace>/disorder/disorder_scores.csv
+        开启时落盘：<workspace>/disorder/disorder_scores.csv
         写回 state：disordered_sites (list)、disorder_scores (dict)
         """
+        if not disorder_filter_enabled():
+            msg = HumanMessage(
+                content=(
+                    "🧬 【disorder 检测】状态：未评估（默认关闭）。"
+                    "ESM-2 启发式分数未经无序预测验证，默认不参与位点过滤；"
+                    "如需查看探索性信号，设置 WB_DISORDER_FILTER_ENABLED=1。"
+                ),
+                name="DisorderDirector",
+            )
+            return {
+                "messages": [msg],
+                "disordered_sites": [],
+                "disorder_scores": {},
+            }
         try:
             report = predict_disorder.func()
             scores = predict_disorder_struct()
         except Exception as e:
-            report = f"【disorder 检测】执行出错: {e}"
+            report = f"【探索性信号】执行出错: {e}"
             scores = {}
 
         sites = [
@@ -565,6 +581,7 @@ SUMMARIZE_SYSTEM = (
     "你是【统一收尾 Agent】。基于历史消息向用户输出最终答复：\n"
     "  - 若执行了完整流水线：依次说明参数化→弛豫→突变三步的结果，并提示后台计算仍在进行。\n"
     "  - 若属于查询/对话：用一两句话总结答案。\n"
+    "  - 涉及 ΔΔG / 实验对照时，必须说明这是 Rosetta 计算筛选结果（REU），不等于实验验证。\n"
     "回复必须使用中文，简明扼要，禁止再调用任何工具，禁止追问。"
 )
 
@@ -627,7 +644,12 @@ def skempi_eval_node(state: AgentState, config=None, **kwargs):
     else:
         reports.append(f"【蛋白-小分子对照】{sc_path} 不存在，跳过 PDBbind 评估（未跑完弛豫？）")
 
-    combined = "\n\n" + "─" * 60 + "\n\n".join(reports)
+    header = (
+        "【口径声明 v0.1】cartesian_ddg 为常规稳定性模式，输出 REU，不是结合自由能；"
+        "对照数据库匹配为探索性比对（默认不做自动评级）。计算筛选 ≠ 实验验证。\n"
+        + "─" * 60
+    )
+    combined = header + "\n\n" + "\n\n".join(reports)
 
     # 报告落盘到 summary/binding_eval_report.txt（随结果 zip 一起交付）
     try:

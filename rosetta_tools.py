@@ -25,6 +25,33 @@ PYMOL_BIN = os.getenv("PYMOL_BIN", "/usr/local/bin/pymol")
 # 线程安全的上下文变量，确保多用户并发时各自目录物理隔离
 current_workspace = contextvars.ContextVar('current_workspace', default='.')
 
+
+# ==========================================
+# 0.5 科学口径开关（v0.1 科学纠偏）
+# 默认全部关闭：本项目的 ESM-2 分数与跨库相关性评级均未经验证，
+# 不得作为默认结论输出。需要时在 .env / 环境变量中显式打开，并自行承担解释责任。
+# ==========================================
+def _env_flag(name: str) -> bool:
+    """读取 0/1 开关型环境变量，缺省视为关闭。"""
+    return os.getenv(name, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def exploratory_eval_enabled() -> bool:
+    """SKEMPI/PDBbind 自动相关性计算与评级（探索性）：默认关闭。
+
+    关闭时对照工具只输出原始数据表与「未评测」状态，不计算相关系数、不给结论。
+    """
+    return _env_flag("WB_EXPLORATORY_EVAL_ENABLED")
+
+
+def disorder_filter_enabled() -> bool:
+    """ESM-2/B-factor disorder 启发式位点过滤（探索性）：默认关闭。
+
+    关闭时 disorder_check 节点记为「未评估」，不推理、不注入 disordered_sites。
+    工具本身（predict_disorder）仍可显式调用，但输出为探索性信号而非概率。
+    """
+    return _env_flag("WB_DISORDER_FILTER_ENABLED")
+
 def get_workspace_path(sub_dir: str = "") -> str:
     """获取当前任务的独立目录，并自动创建"""
     base_dir = current_workspace.get()
@@ -724,7 +751,16 @@ def _spearman(x, y):
 
 @tool
 def evaluate_against_skempi(pdb_id: str, ddg_results_path: str = "") -> str:
-    """【实验对照】拿 SKEMPI 2.0 数据库里同 PDB 同位点的实验 ΔΔG，跟我们的预测算 Pearson 相关性，输出可信度报告。
+    """【实验对照·探索性】拿 SKEMPI 2.0 数据库里同 PDB 同位点的实验 ΔΔG 与预测 ΔΔG 并排比对。
+
+    默认（WB_EXPLORATORY_EVAL_ENABLED=0）只输出位点匹配表与「未评测」状态，
+    不计算相关系数、不给任何可信度结论。显式开启后也只输出探索性 Pearson，
+    并注明样本数与链无关匹配的局限，不构成可信度评级。
+
+    已知口径限制（v0.1 如实标注）：
+      - 预测值来自 cartesian_ddg 常规稳定性模式（REU），实验标签是结合 ΔΔG（kcal/mol），
+        两者物理量不同，相关性仅作探索性参考；
+      - 匹配 key 为链无关三元组 (wt, pos, mut)，多链同编号位点可能串位（v0.4 前不消除）。
 
     使用前提：
       1. 已下载 SKEMPI 2.0 CSV 到 rosetta_manuals/skempi_v2.csv（官方地址 https://life.bsc.es/pid/skempi2）
@@ -805,30 +841,37 @@ def evaluate_against_skempi(pdb_id: str, ddg_results_path: str = "") -> str:
     r, n = _pearson(pred_vals, exp_vals)
 
     lines = [
-        f"【实验对照】{pdb_id_upper} 匹配到 {n} 个重叠位点",
-        f"Pearson r = {r:.3f}  (n={n})",
+        f"【实验对照·探索性】{pdb_id_upper} 匹配到 {n} 个重叠位点",
+        "口径说明：预测 = cartesian_ddg 常规稳定性模式 (REU)；实验 = SKEMPI 结合 ΔΔG (kcal/mol)。两者物理量不同。",
+        "匹配说明：key 为链无关三元组 (wt, pos, mut)，多链同编号位点可能串位（未消除）。",
         "",
-        "位点详情 (wt-pos-mut: 预测 vs 实验):",
+        "位点详情 (wt-pos-mut: 预测 REU vs 实验 kcal/mol):",
     ]
     for k in common:
-        lines.append(f"  {k[0]}-{k[1]}-{k[2]}: {predicted[k]:+.2f}  vs  {experimental_avg[k]:+.2f}  REU")
-    lines.append("")
-    if r > 0.7:
-        lines.append("✅ 相关性强：本批次 Rosetta 预测可信度高。")
-    elif r > 0.4:
-        lines.append("⚠️ 相关性中等：部分位点可信，建议人工复检偏差大的位点。")
-    elif r > 0:
-        lines.append("❌ 相关性弱：本批次结果参考价值低，建议检查输入结构/参数。")
-    else:
-        lines.append("❌ 负相关或零相关：预测与实验趋势不一致，需排查管线是否出错。")
+        lines.append(f"  {k[0]}-{k[1]}-{k[2]}: {predicted[k]:+.2f}  vs  {experimental_avg[k]:+.2f}")
 
+    if not exploratory_eval_enabled():
+        lines.extend([
+            "",
+            "状态：未评测 —— 自动相关性计算与可信度评级默认关闭"
+            "（WB_EXPLORATORY_EVAL_ENABLED=1 可开启探索性 Pearson 比对）。",
+            "计算筛选 ≠ 实验验证。",
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
+        "",
+        f"探索性 Pearson r = {r:.3f}  (n={n})",
+        "以上为探索性结果：预测量与实验标签物理量不同、匹配 key 链无关，不构成任何可信度结论。",
+    ])
     return "\n".join(lines)
 
 
 # ==========================================
-# 3.7. ESM-2 disorder 检测：蛋白质语言模型推理
+# 3.7. ESM-2 "disorder" 启发式信号（v0.1：未经验证，默认不参与位点过滤）
 # ==========================================
-DISORDER_THRESHOLD = 0.5  # disorder score > 0.5 视为无序残基
+# 探索性信号展示阈值；ESM-2 分数未经无序预测校准，仅作参考，不作为「无序概率」使用
+DISORDER_THRESHOLD = 0.5
 
 
 def _parse_ca_atoms(pdb_path):
@@ -942,12 +985,13 @@ def _load_esm2():
 
 
 def _predict_disorder_esm2(sequence, residues):
-    """用 ESM-2 蛋白质语言模型推理 disorder 概率
+    """输出 ESM-2 对观测残基的未校准置信度启发式分数（探索性信号，非 disorder 概率）。
 
-    策略：拿 ESM-2 的 per-position masked language modeling log-prob，
-    高 log-prob（模型自信）→ 有序；低 log-prob → 无序。
+    实现：对未 mask 的完整序列取模型在每位点输出野生型氨基酸的 log-prob，
+    经 (log_p + 3)/3 线性映射到 0-1 后取反。该实现既非 masked language modeling，
+    也未在任何 disorder 数据集上校准——分数与真实无序倾向的关系未经验证（v0.1 如实标注）。
 
-    返回 ({chain: {resnum: disorder_score}}, method_used)
+    返回 ({chain: {resnum: score}}, method_used)
     """
     import torch
 
@@ -985,16 +1029,16 @@ def _predict_disorder_esm2(sequence, residues):
 
 @tool
 def predict_disorder(pdb_path: str = "") -> str:
-    """【disorder 检测】预测每个残基的 disorder 概率
+    """【探索性信号】输出每残基的未校准启发式分数（非 disorder 概率，未经本项目验证）
 
     策略：
-      1. 优先用 ESM-2 蛋白质语言模型（35M 参数，本地推理）
+      1. 优先用 ESM-2 置信度启发式（35M 参数，本地推理）
       2. fair-esm 未装或模型加载失败时，自动回退到 PDB 信号（B-factor + 残基 gap）
 
     输出报告包含：
-      - 总残基数、有序/无序数量
-      - 按位点列出的 disorder 分数（top 10 最无序）
-      - 给用户的提示：哪些位点不要相信预测
+      - 总残基数、高/低信号数量
+      - 按位点列出的分数（top 10 高信号）
+      - 提示：该分数与真实无序倾向的关系未经验证，仅供探索性参考
 
     Args:
         pdb_path: PDB 文件路径。不传则自动找当前 workspace 的 cartesian_relax/complex_rosetta_ready.pdb
@@ -1048,26 +1092,23 @@ def predict_disorder(pdb_path: str = "") -> str:
     top_disordered = all_sites[:10]
 
     lines = [
-        f"【disorder 检测】{os.path.basename(pdb_path)}",
-        f"方法: {method}",
-        f"总残基: {total} | 有序 (<0.5): {n_ordered} | 无序 (≥0.5): {n_disordered}  ({100*n_disordered/total:.1f}%)",
+        f"【探索性信号】{os.path.basename(pdb_path)}",
+        f"方法: {method}（未经验证的启发式分数，非 disorder 概率）",
+        f"总残基: {total} | 低信号 (<0.5): {n_ordered} | 高信号 (≥0.5): {n_disordered}  ({100*n_disordered/total:.1f}%)",
         "",
     ]
 
     if top_disordered:
-        lines.append("Top 10 最无序残基 (disorder ≥ 0.5 的位点):")
+        lines.append("Top 10 高信号位点（≥0.5 仅作展示参考）:")
         for chain, resnum, score in top_disordered:
             flag = "  ⚠️" if score >= DISORDER_THRESHOLD else ""
-            lines.append(f"  {chain}_{resnum}: disorder={score:.3f}{flag}")
+            lines.append(f"  {chain}_{resnum}: score={score:.3f}{flag}")
 
     lines.append("")
-    if n_disordered > 0:
-        lines.append(
-            f"提示: 无序区域 (disorder ≥ {DISORDER_THRESHOLD}) 的 Rosetta 预测可信度低，"
-            "建议在分析结果时优先看有序区域的位点。"
-        )
-    else:
-        lines.append("✅ 所有残基 disorder < 0.5，结构稳定")
+    lines.append(
+        "提示: 该分数与真实无序倾向的关系未经验证（默认不参与位点过滤），"
+        "不能据此断定位点不可信或结构稳定。计算筛选 ≠ 实验验证。"
+    )
 
     return "\n".join(lines)
 
@@ -1208,7 +1249,11 @@ def _parse_score_sc(score_sc_path):
 
 @tool
 def evaluate_against_pdbbind(pdb_ids: str, score_paths: str = "") -> str:
-    """【蛋白-小分子对照】拿 PDBbind v2020 里同 PDB 的实测 Kd，跟 Rosetta score.sc 的 total_score 比 Spearman 相关性。
+    """【蛋白-小分子对照·探索性】把 Rosetta score.sc 的 total_score 与 PDBbind v2020 实测亲和力并排展示。
+
+    默认（WB_EXPLORATORY_EVAL_ENABLED=0）只输出原始数据表与「未评测」状态，
+    不计算 Spearman、不做任何强/中/弱评级。跨结构比较复合物 total_score 与 Kd
+    缺少物理与评测依据（v0.4 前不作为可信度依据）。
 
     参数：
       - pdb_ids：单个 PDB ID（如 "1MC9"），或多个 PDB 列表用逗号分隔（如 "1JTG,1HVH,1HVR"）
@@ -1276,7 +1321,7 @@ def evaluate_against_pdbbind(pdb_ids: str, score_paths: str = "") -> str:
 
     # 报告
     lines = [
-        f"【蛋白-小分子对照】共 {len(pdb_data)} 个 PDB",
+        f"【蛋白-小分子对照·探索性】共 {len(pdb_data)} 个 PDB",
         "",
         f"  {'PDB':<14}{'Affinity(M)':<18}{'-log10 Aff':<14}{'Rosetta(REU)':<14}{'nstruct'}",
     ]
@@ -1286,33 +1331,36 @@ def evaluate_against_pdbbind(pdb_ids: str, score_paths: str = "") -> str:
             f"{d['log_aff']:>10.2f}    {d['rosetta_score']:>+12.2f}    {d['nstruct']}"
         )
 
+    lines.append("")
+    lines.append(
+        "口径说明：total_score 为复合物折叠+界面能量的综合 REU 值，不是结合自由能；"
+        "跨体系与 Kd 并排仅为展示。"
+    )
+    if not exploratory_eval_enabled():
+        lines.extend([
+            "状态：未评测 —— 自动 Spearman 相关性与评级默认关闭"
+            "（WB_EXPLORATORY_EVAL_ENABLED=1 可开启探索性比对）。",
+            "计算筛选 ≠ 实验验证。",
+        ])
+        return "\n".join(lines)
+
     if len(pdb_data) < 3:
         lines.extend([
-            "",
-            f"⚠️ 只 {len(pdb_data)} 个 PDB，Spearman 需要 ≥3 个数据点。",
+            f"⚠️ 只 {len(pdb_data)} 个 PDB，探索性 Spearman 需要 ≥3 个数据点。",
             "  多配体评估：把 HIV protease / thrombin / carbonic anhydrase 的多个 PDB ID 都跑 run_cartesian_relax，",
             "  再用 'pdb_ids=1JTG,1HVH,1HVR,...;score_paths=/path1/sc;/path2/sc;...' 调用本工具。",
         ])
         return "\n".join(lines)
 
-    # Spearman 计算（Rosetta 越低 ≈ Kd 越小 → 期望负相关）
+    # Spearman 计算（仅显式开启探索性对照时执行；输出不附带任何评级）
     rosetta_vals = [d['rosetta_score'] for d in pdb_data]
     aff_vals = [d['log_aff'] for d in pdb_data]
     rho, n = _spearman(rosetta_vals, aff_vals)
 
     lines.extend([
-        "",
-        f"Spearman ρ = {rho:.3f}  (n={n}, 期望负相关：Rosetta 越低 ≈ Kd 越小)",
-        "",
+        f"探索性 Spearman ρ = {rho:.3f}  (n={n}, 期望负相关：Rosetta 越低 ≈ Kd 越小)",
+        "以上为探索性结果：样本量小、跨体系比较 total_score 缺乏依据，不构成可信度结论。",
     ])
-    if rho < -0.6:
-        lines.append("✅ 强负相关：Rosetta 打分能很好预测 Kd 排序。")
-    elif rho < -0.3:
-        lines.append("⚠️ 中等负相关：部分一致，可作初筛。")
-    elif rho < 0.3:
-        lines.append("❌ 弱/无相关：Rosetta 打分对该体系不可靠，建议用 score-function=beta_nov16 等专用打分。")
-    else:
-        lines.append("❓ 正相关异常：检查 PDB 匹配逻辑或亲和力单位是否一致。")
 
     return "\n".join(lines)
 

@@ -6,6 +6,19 @@
 
 ---
 
+## 0. 科学口径与已知边界（v0.1，请先读）
+
+本项目正按 `PROTEIN_WORKBENCH_PLAN.md` 渐进升级为可追溯、可复现、可评估的科研工作台。v0.1 起，以下口径是**默认行为**：
+
+1. **cartesian_ddg = 常规稳定性模式**，在"蛋白+配体复合物"上计算，输出 **ΔΔG（REU）**。它**不是结合自由能**，不等于实验亲和力。
+2. **SKEMPI / PDBbind 对照默认只展示数据，状态为「未评测」**——自动相关性与"强/中/弱可信度"评级已默认停用（`WB_EXPLORATORY_EVAL_ENABLED=0`）。原因：预测量（稳定性 ΔΔG / 复合物总分）与实验标签（结合 ΔΔG / Kd）物理量不同，且 SKEMPI 匹配 key 链无关、多链同位点可能串位。显式开启后也只输出**探索性**相关系数，不构成可信度结论。
+3. **ESM-2 "disorder" 节点默认关闭**（`WB_DISORDER_FILTER_ENABLED=0`）：原实现取未 mask 序列的 log-prob 做线性映射，既非 masked LM 也未在任何无序数据集上校准，不得称为"无序概率"。开启后输出也仅是**探索性信号**，不自动排除任何突变位点。
+4. **计算筛选 ≠ 实验验证**。任何 Rosetta / MD / ESM 输出都不应被表述为已验证的实验结论。
+
+开关见 `.env.example`；改动依据与证据见 `docs/current_state.md` 与 `PROGRESS.md`。
+
+---
+
 ## 1. 仓库结构
 
 ```
@@ -101,6 +114,8 @@ rosetta-agent/
 | SKEMPI | Pearson r | >0.7 | 0.4 – 0.7 | <0.4 |
 | PDBbind | Spearman ρ（负相关）| <-0.6 | -0.6 ~ -0.3 | >-0.3 |
 
+> **v0.1 起上表评级已默认停用**：对照工具只输出数据表与「未评测」状态；显式开启 `WB_EXPLORATORY_EVAL_ENABLED=1` 后仅输出探索性相关系数并注明局限，**不输出强/中/弱结论**。预测量与实验标签物理量不同（REU vs kcal/mol；复合物总分 vs Kd），评级缺乏依据。
+
 ### 4.5 不在数据库怎么办
 
 - **优雅降级**：节点返回 `未找到 PDB XXX 的记录`，**不影响后续 summarize**
@@ -110,7 +125,9 @@ rosetta-agent/
 
 ## 5. ESM-2 disorder 过滤
 
-跑完弛豫后、`run_saturation_mutagenesis` 之前，`disorder_check` 节点用 ESM-2 t12 35M 给每个残基打 disorder 概率（≥0.5 视为无序）。
+> **v0.1 默认关闭**（`WB_DISORDER_FILTER_ENABLED=0`）：节点记「未评估」，不推理、不排除位点。原实现的分数不是经过验证的无序概率——它对未 mask 的序列取 log-prob 再线性映射，未在任何无序数据集上校准。开启后输出仅作探索性信号展示，不自动排除任何突变位点。以下为原设计背景，保留备查。
+
+跑完弛豫后、`run_saturation_mutagenesis` 之前，`disorder_check` 节点原设计用 ESM-2 t12 35M 给每个残基打分（≥0.5 视为高信号）。
 
 ### 为什么需要
 
