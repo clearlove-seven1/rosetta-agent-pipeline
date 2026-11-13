@@ -12,7 +12,7 @@
 | v0.2 CLI MVP | **进行中（核心已通）** | 2026-11 第 3-4 周 | 2026-11-12 | `workbench/` 包 + 单测 24/24 + **1UBQ G76E 真实跑通**（ΔΔG=+1.086 REU，报告/manifest 齐全） | 等用户验收；批量驱动与 README 用例未写 |
 | v0.3 可靠运行 | **待验证** | 2026-11 第 5 周 | 2026-11-12 | 中断/恢复实测（interrupted→resume→ΔΔG 一致）、空格路径实测、单测 16+24+26 全过 | 等用户验收 |
 | v0.4 科学评测 | **进行中（评测闭环已通，首次真实结果 +0.34）** | 2026-11 第 6-7 周 | 2026-11-13 | 11 结构 121 突变（S669）；符号陷阱已修（provenance §6）；**全局 r=+0.34 / ρ=+0.34**，按结构 +0.05~+0.90 | 1A7V 结构弱相关待查；扩样本到全集可选 |
-| v0.5 GROMACS | 未开始 | 待填写 | — | **实测：已装 2026.1（/opt/software，GPU CUDA 构建）**，cuFFT 11 链接断裂待修 | 修复方案待用户选择（§9） |
+| v0.5 GROMACS | **进行中（流程验证已通）** | 2026-11 第 8-9 周 | 2026-11-13 | `scripts/gromacs_smoke_test.py` + `docs/gromacs_smoke_test.md`；**2HBB WT 51 残基 EM→NVT→NPT→1ns 全链路 122 s，GPU 双证据（mdrun 日志 + nvidia-smi 15→387 MiB），1103.8 ns/day，manifest 全记录** | 正式科研模拟工作流未实现；NVT/NPT ld-seed 未固定；CBM13 力场参数待确认 |
 | v0.6 Agent / 界面 | 未开始 | 待填写 | — | — | — |
 | v1.0 发布候选 | 未开始 | 待填写 | — | — | — |
 
@@ -35,6 +35,21 @@
 - **发现的问题 / 根因**：预测量与对照标签不匹配是系统性口径问题，不是单点 bug；"完成"判定只看产物文件存在，无法区分失败/中断。
 - **下一步**：等用户核对 current_state.md §9 待确认清单 → 执行 v0.1（默认关闭无依据指标与评级 + 口径声明 + 针对性测试）。
 - **人工需要确认的科研问题**：v0.2 任务口径（单体稳定性 vs 复合物）；GROMACS 安装方式；测试体系选择（建议 1UBQ）。
+
+### 2026-11-13 ｜ 任务：v0.5-01 GROMACS 流程验证冒烟（2HBB WT，1 ns）
+- **本次目标**：计划 §6 v0.5 首项——真实 GPU mdrun 短测试证明命令链/输出/记录正常；以日志+nvidia-smi 双证据验证 GPU 生效；严格区分流程测试与科研模拟。
+- **修改文件**：`scripts/gromacs_smoke_test.py`（新：参数列表调用、逐步超时/日志/退出码、§5.3 manifest 全记录、ns≤5 护栏、目录防覆盖、GPU 双证据采集）；`docs/gromacs_smoke_test.md`（新报告）；`docs/gromacs_smoke_test_2hbb_A.png`（分析图）；PROGRESS.md（v0.5 行 + 本日志）。
+- **实际完成**：
+  - 体系：v0.4 实际使用的 2HBB WT 输入（`runs/20261113_113523_2hbb_A10E/inputs/clean_protein.pdb`，sha256 `fa7a67cd…`），脚本前置校验确认单链 A、51 残基连续、无 HETATM、全标准残基；amber14sb/TIP3P、dodecahedron 1.0 nm、0.15 M NaCl 中和，14,077 原子。
+  - **全链路 122 s 成功**：EM 279 步收敛（8.5 s）→ NVT 100 ps（14.4 s）→ NPT 100 ps（16.9 s）→ 生产 1 ns（80.5 s）→ RMSD/RMSF/能量分析出图。
+  - **GPU 生效（双重证据）**：md.log「1 GPU selected for this run / PP tasks…on the GPU / PME tasks will do all aspects on the GPU」+ 运行期 nvidia-smi 32 采样 GPU0 显存 15→387 MiB（判定规则=峰值−基线>200 MiB，不设固定绝对阈值）；1103.8 ns/day。manifest `gpu_used_assessment` 自动判定「GPU 实际参与」。
+  - 流程观察：T=299.89±2.49 K（恒温器正常）、RMSD 前 10 ps 0.04→平台 ~0.15-0.20 nm、C 端尾 RMSF 最高（形态合理）；**manifest 固定写入 convergence=not_assessed / scientific_conclusion=none**。
+- **验证命令与结果**：run 目录 `runs/gromacs_smoke/20261113_184917_gromacs_smoke_2hbb_A/` manifest status=succeeded、13 步退出码全 0、15 个产物 sha256 存档；分析图经视觉自检（轴单位/时间范围/残基号 1–51/免责声明齐全）。
+- **未验证**：动力学收敛性（按定义不评估）；多卡/多 rank；正式科研模拟（未实现）；1DIV 及其他体系。
+- **发现的问题 / 根因（4 次失败迭代，现场全部保留）**：① ions 步 PME×净电荷 → grompp 拒绝，按官方教程改 cut-off（该 tpr 仅作 genion 输入）；② POSRES 缺 `-r` 参考坐标 → 补 em.gro/nvt.gro；③ 2026.1 `rmsf -res` 是布尔开关且实测退出 0 却不产出文件（行为存疑，如实记录）→ 改 C-alpha 逐原子 RMSF；④ rmsf x 列是全体系原子序号被误当残基号 → 按 CA 顺序重建 1–51。另：GPU 判定初版用 2 GiB 固定阈值对小体系完全错配（387 MiB 被误判"未见 GPU"）→ 改基线差值法。
+- **环境变更**：rosetta-agent env 新增 matplotlib 3.10.9（pip，numpy 2.2.6 等既有包未动；此前系统/env 均无绘图库）。
+- **下一步**：v0.5-02 建议——封装为 workbench 正式执行器（任务 manifest 接入现有 runs 体系）；正式模拟的科学问题、时长预算与 CBM13 糖配体力场参数来源**待用户确认**。
+- **人工需要确认的科研问题**：正式模拟的科学问题（CBM13—糖界面?构象稳定性?）、时长/副本预算、糖配体参数来源（参数不全继续阻塞，不虚构参数）。
 
 ### 2026-11-13 ｜ 任务：v0.4-03 负相关排查——符号约定陷阱（已定位并修复）
 - **本次目标**：排查 2HBB 首评的 r=-0.595 异常：扩样本 10 结构 → 诊断 → 修复。
