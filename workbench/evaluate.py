@@ -212,10 +212,27 @@ def compute_metrics(matched: list, min_samples: int) -> "tuple[dict | None, list
     return metrics, []
 
 
+def per_pdb_breakdown(matched: list, min_group: int = 8) -> dict:
+    """按结构分组的相关性（诊断用：定位负相关是结构特有还是全局系统性）。"""
+    groups = {}
+    for s in matched:
+        groups.setdefault(s["pdb_id"], []).append(s)
+    out = {}
+    for pdb in sorted(groups):
+        ss = groups[pdb]
+        if len(ss) < min_group:
+            continue
+        r, _ = pearson([x["ddg_reu"] for x in ss], [x["exp_ddg_kcal_mol"] for x in ss])
+        rho, _ = spearman([x["ddg_reu"] for x in ss], [x["exp_ddg_kcal_mol"] for x in ss])
+        out[pdb] = {"n": len(ss), "pearson_r": round(r, 4), "spearman_rho": round(rho, 4)}
+    return out
+
+
 # ==========================================
 # 报告
 # ==========================================
-def render_report(dataset_info, samples, excluded, matched, metrics, notices, min_samples) -> str:
+def render_report(dataset_info, samples, excluded, matched, metrics, notices, min_samples,
+                  breakdown=None) -> str:
     lines = [
         "=" * 64,
         "稳定性评测报告（Protein Design Workbench v0.4）",
@@ -265,6 +282,12 @@ def render_report(dataset_info, samples, excluded, matched, metrics, notices, mi
             f"  MAE(跨单位) = {metrics['mae_cross_unit_ref_only']}  (REU vs kcal/mol, 仅相对参考)",
             f"  n           = {metrics['n']}",
         ]
+        if breakdown:
+            lines += ["", "── 按结构分组（n≥8；定位负相关是结构特有还是系统性）──"]
+            for pdb, b in breakdown.items():
+                lines.append(
+                    f"  {pdb}: n={b['n']}  r={b['pearson_r']:+.3f}  ρ={b['spearman_rho']:+.3f}"
+                )
     lines += ["", "── 逐样本明细（匹配与排除逐条可追踪, 详见 eval_details.json）──"]
     for s in matched:
         lines.append(
@@ -304,11 +327,13 @@ def main(argv=None) -> int:
 
     samples, excluded = collect_samples(args.runs)
     matched = []
+    breakdown = {}
     if rows:
         matched, excluded_extra = match_samples(samples, rows)
         excluded += excluded_extra
         metrics, notices_metrics = compute_metrics(matched, args.min_samples)
         notices += notices_metrics
+        breakdown = per_pdb_breakdown(matched) if metrics else {}
     else:
         metrics = None
 
@@ -327,6 +352,7 @@ def main(argv=None) -> int:
             "excluded": len(excluded),
             "status": ("未评测" if metrics is None else "已评测"),
             "metrics": metrics,
+            "per_pdb_breakdown": breakdown,
         },
         "samples": samples,
         "matched": matched,
@@ -336,7 +362,8 @@ def main(argv=None) -> int:
     with open(os.path.join(eval_dir, "eval_details.json"), "w", encoding="utf-8") as f:
         json.dump(details, f, ensure_ascii=False, indent=2)
 
-    report = render_report(dataset_info, samples, excluded, matched, metrics, notices, args.min_samples)
+    report = render_report(dataset_info, samples, excluded, matched, metrics, notices,
+                           args.min_samples, breakdown)
     with open(os.path.join(eval_dir, "report.txt"), "w", encoding="utf-8") as f:
         f.write(report + "\n")
     print(report)

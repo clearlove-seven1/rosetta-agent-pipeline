@@ -6,11 +6,13 @@ cd "$(dirname "$0")/.."
 
 PY=~/.conda/envs/rosetta-agent/bin/python
 FILTER="${1:-}"
+EXCLUDE="${EXCLUDE:-2jie}"   # 默认排除 2JIE（relax >30min 必超时，恢复无意义）
 LIST=$(mktemp)
 
 for d in runs/*/; do
     [ -f "$d/manifest.json" ] || continue
     if [ -n "$FILTER" ] && [[ "$d" != *"$FILTER"* ]]; then continue; fi
+    if [[ "${d,,}" == *"2jie"* && "$EXCLUDE" == *2jie* ]]; then continue; fi
     st=$("$PY" -c "import json;print(json.load(open('$d/manifest.json'))['status'])" 2>/dev/null || echo "?")
     [ "$st" == "interrupted" ] && echo "${d%/}"
 done > "$LIST"

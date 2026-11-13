@@ -21,6 +21,13 @@ SOURCE = "S669"
 REFERENCE = "Pancotti et al. 2022, doi:10.1093/bib/bbab555"
 MUT_RE = re.compile(r"^([A-Za-z])(\d+)([A-Za-z])$")
 
+# ⚠️ 符号约定修正（2026-11-13，证据见 docs/data_provenance.md §6）：
+# ThermoMPNN 镜像的 DDG 列为【负 = 去稳定化】约定（与 Rosetta/FoldX 相反）。
+# 依据：139 样本系统性负相关 + 疏水核心 I/L/V→A（-4.28 等）与螺旋 A→G
+# （-0.3~-1.8）在"正=去稳定化"读法下为热力学不可能值，反号后均为教科书值。
+# 如来源方澄清约定，删除 SIGN_FLIP 即回滚。
+SIGN_FLIP = -1.0
+
 
 def main(src: str, dst: str) -> int:
     n_ok, n_bad = 0, 0
@@ -49,7 +56,7 @@ def main(src: str, dst: str) -> int:
                 n_bad += 1
                 continue
             w.writerow([pdb_id, chain, resnum, wt, mut_aa,
-                        f"{ddg_val:.3f}", SOURCE, REFERENCE])
+                        f"{ddg_val * SIGN_FLIP:.3f}", SOURCE, REFERENCE])
             n_ok += 1
     print(f"转换完成: {n_ok} 条写入 {dst}（跳过 {n_bad} 条格式异常）")
     return 0 if n_ok > 0 else 1
