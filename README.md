@@ -257,6 +257,29 @@ python rosetta_mcp_server.py --transport sse --port 8000     # SSE 模式（远�
 
 `create_task → parameterize_ligand → run_cartesian_relax → predict_disorder → run_saturation_mutagenesis → evaluate_against_skempi / evaluate_against_pdbbind`
 
+### 8.5 Workbench 确定性 CLI（v0.2+，推荐科研入口，无 LLM）
+
+```bash
+python -m workbench.cli --protein examples/1ubq/1ubq.pdb --chain A --resnum 76 --to E
+python -m workbench.cli --resume runs/<run_id>          # 断点恢复（哈希校验）
+python -m workbench.evaluate --benchmark rosetta_manuals/stability_benchmark_s669.csv --runs runs
+```
+
+口径与边界见文件头 `SCOPE`：单体蛋白 · 单点突变 · cartesian_ddg 常规模式 · ΔΔG (REU)。计算筛选 ≠ 实验验证。
+
+### 8.6 GROMACS MD 执行器（v0.5，实验性）
+
+```bash
+python -m workbench.gromacs \
+  --protein runs/<v04_run>/inputs/clean_protein.pdb --chain A --label 2hbb_A \
+  --ns 1.0                                   # EM→NVT→NPT→生产 MD，全阶段固定种子
+python -m workbench.gromacs --resume runs/gromacs/<run_id>   # 逐阶段哈希复用
+```
+
+- 输入要求：**单链、干燥（无 HETATM/水）、全标准残基**（Rosetta 清洗产物 `inputs/clean_protein.pdb` 即符合）；校验在调用任何 gmx 之前完成。
+- GPU 生效以 **mdrun 日志 + 运行期 nvidia-smi 采样双证据**判定（manifest `gpu_used_assessment`）；`ns > 5` 需显式 `--confirm-long-run`。
+- **流程成功 ≠ 动力学收敛 ≠ 科学结论**；分析图与 summary 仅作流程观察，不得用于筛选/评分/亲和力判断。
+
 ---
 
 ## 9. 排错

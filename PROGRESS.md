@@ -12,7 +12,7 @@
 | v0.2 CLI MVP | **进行中（核心已通）** | 2026-11 第 3-4 周 | 2026-11-12 | `workbench/` 包 + 单测 24/24 + **1UBQ G76E 真实跑通**（ΔΔG=+1.086 REU，报告/manifest 齐全） | 等用户验收；批量驱动与 README 用例未写 |
 | v0.3 可靠运行 | **待验证** | 2026-11 第 5 周 | 2026-11-12 | 中断/恢复实测（interrupted→resume→ΔΔG 一致）、空格路径实测、单测 16+24+26 全过 | 等用户验收 |
 | v0.4 科学评测 | **进行中（评测闭环已通，首次真实结果 +0.34）** | 2026-11 第 6-7 周 | 2026-11-13 | 11 结构 121 突变（S669）；符号陷阱已修（provenance §6）；**全局 r=+0.34 / ρ=+0.34**，按结构 +0.05~+0.90 | 1A7V 结构弱相关待查；扩样本到全集可选 |
-| v0.5 GROMACS | **进行中（流程验证已通）** | 2026-11 第 8-9 周 | 2026-11-13 | `scripts/gromacs_smoke_test.py` + `docs/gromacs_smoke_test.md`；**2HBB WT 51 残基 EM→NVT→NPT→1ns 全链路 122 s，GPU 双证据（mdrun 日志 + nvidia-smi 15→387 MiB），1103.8 ns/day，manifest 全记录** | 正式科研模拟工作流未实现；NVT/NPT ld-seed 未固定；CBM13 力场参数待确认 |
+| v0.5 GROMACS | **进行中（冒烟 + 正式执行器验收已通）** | 2026-11 第 8-9 周 | 2026-11-13 | v0.5-01 冒烟（`docs/gromacs_smoke_test.md`）+ v0.5-02 `workbench/gromacs.py` 正式执行器；**单测 27/27（fake gmx）；真实 1ns×2（完整跑通 + 中断×2/恢复复用→succeeded），GPU 双证据 ~1100 ns/day** | 正式科研模拟待用户定科学问题/时长预算；CBM13 糖配体力场参数待确认 |
 | v0.6 Agent / 界面 | 未开始 | 待填写 | — | — | — |
 | v1.0 发布候选 | 未开始 | 待填写 | — | — | — |
 
@@ -50,6 +50,23 @@
 - **环境变更**：rosetta-agent env 新增 matplotlib 3.10.9（pip，numpy 2.2.6 等既有包未动；此前系统/env 均无绘图库）。
 - **下一步**：v0.5-02 建议——封装为 workbench 正式执行器（任务 manifest 接入现有 runs 体系）；正式模拟的科学问题、时长预算与 CBM13 糖配体力场参数来源**待用户确认**。
 - **人工需要确认的科研问题**：正式模拟的科学问题（CBM13—糖界面?构象稳定性?）、时长/副本预算、糖配体参数来源（参数不全继续阻塞，不虚构参数）。
+
+### 2026-11-13 ｜ 任务：v0.5-02 GROMACS 正式执行器封装（冒烟→workbench 正式入口）
+- **本次目标**：把 v0.5-01 冒烟流程封装为 workbench 正式执行器——状态机/manifest 接入现有 runs 体系、全阶段固定种子、断点恢复、护栏，与 Rosetta 侧同等工程纪律。
+- **修改文件**：`workbench/gromacs.py`（新，独立入口 `python -m workbench.gromacs`，复用 executors 的进程组/协作中断/资源统计）、`tests/test_workbench_gromacs.py`（新，27 项）、`README.md`（§8.5/8.6 用法）、`PROGRESS.md`（本日志）。
+- **实际完成**：
+  - 正式纪律：参数列表调用、独立 cwd、逐步日志/超时/退出码、「退出码 0 + 预期产物 + 哈希」双判定；状态机 created→validated→running→succeeded/failed/interrupted；退出码 0/2/3/4/130；manifest 同构 schema 0.2；未预期崩溃兜底不停在 running。
+  - **全阶段固定种子**（nvt/npt/md 的 ld-seed + nvt gen-seed，默认 20261113）——补掉 v0.5-01 遗留；ions 步 cut-off、POSRES 显式 `-r` 等冒烟教训固化进 mdp 模板与注释。
+  - **断点恢复**：逐阶段产物哈希复用 + 配置指纹校验（不匹配拒绝）；topol.top 所有权归最后一个改写者 genion（否则下游突变使上游复用校验失效——单测实测教训）；solvate/genion 重算前从 pristine 基线恢复保证幂等；"经过修改而非创建"的文件只记录不清除。
+  - 护栏：输入校验（单链/干燥/全标准残基）**先于** gmx 环境解析；`ns>5` 需 `--confirm-long-run`；目录防覆盖；GPU 双证据判定（基线差值法）+ 分析出图照旧。
+- **验证命令与结果**：
+  - `python tests/test_workbench_gromacs.py` → **27/27**（fake gmx 注入：全链路/种子固定/护栏/防覆盖/校验先行/依赖缺失/失败状态/恢复复用/GPU 解析）。
+  - 真实验收（2HBB WT 1ns）：① 完整跑通 `runs/gromacs/20261113_214740_gmx_2hbb_A`（succeeded，GPU 双证据 387 MiB/1094.6 ns/day）；② SIGTERM 中断 → `interrupted` 如实落盘、无孤儿进程；③ **resume×2** → 复用 pdb2gmx~em 共 5 阶段、nvt/npt/生产真实重算（1114.3 ns/day）→ `succeeded`，`resume_history` 如实记录 `interrupted→interrupted→succeeded`。
+- **过程中发现并修复（均由真实环境暴露，单测未覆盖）**：① run_dir 相对路径在子进程 cwd 切换后失效→入口绝对化；② 阶段清理把"经过修改"的 topol.top 也删除→区分 created/mutated；③ ions.mdp rcoulomb 取默认 1.0 ≠ rvdw 1.2，Verlet+cut-off 直接非法→两者恒同值；④ config 指纹派生键不对称（mdp_sha256）导致恢复误拒；⑤ topol 所有权语义。
+- **环境事故（如实）**：验收窗口与外部负载重叠（`~/projects/rosetta/` 的 `gromacs_agent.py` 起了 mdrun，双 GPU 驻留 + load 497），我的任务被严重饿死；已协作中断让出资源，未触碰外部进程，负载间隙完成 resume 验收。
+- **未验证**：多链/多副本/`-cpi` 检查点续跑；非连续编号结构下 RMSF 残基映射（已有警告提示）；正式科研模拟本身。
+- **下一步**：等用户确认科学问题与时长预算 → 正式模拟方案（v0.5-03）；可选加固：run 目录锁防并发恢复。
+- **人工需要确认的科研问题**：同 v0.5-01（科学问题/时长副本预算/CBM13 糖配体参数来源）。
 
 ### 2026-11-13 ｜ 任务：v0.4-03 负相关排查——符号约定陷阱（已定位并修复）
 - **本次目标**：排查 2HBB 首评的 r=-0.595 异常：扩样本 10 结构 → 诊断 → 修复。
