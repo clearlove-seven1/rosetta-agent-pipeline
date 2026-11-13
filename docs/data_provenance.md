@@ -19,6 +19,21 @@
 | 分发决定 | **不随仓库分发**（与 §1 同政策；`.gitignore` 已覆盖） |
 | 引用要求 | 使用任何基于本文件的评测结果，必须引用上述 Pancotti et al. 2022 与所用结构的原始文献 |
 
+### 6.1 符号口径求证（2026-11-13，悬案闭环）
+
+**结论：镜像 CSV 的 DDG 列原始约定为【负 = 去稳定化】；ThermoMPNN 官方在加载时对其取负（×−1），统一为【正 = 去稳定化】。本项目的 `SIGN_FLIP = -1` 与官方实现完全一致，予以保留。**
+
+证据链（全部来自 Kuhlman-Lab/ThermoMPNN 仓库源码，2026-11-13 查证）：
+
+1. `datasets.py` 三个数据源加载时符号处理**不一致**：MegaScale 取负（`ddG = -torch.tensor([float(row.ddG_ML)], ...)`）、FireProt 原样（`torch.tensor([row.ddG], ...)`）、**ddgBench 取负（`torch.tensor([row.DDG * -1.], dtype=torch.float32)`）**——作者清楚各原始文件约定不同，在加载层统一。
+2. `analysis/thermompnn_benchmarking.py` 的 `main()` 显示 **S669（`s669_clean_dir.csv`）正是经 `ddgBenchDataset` 加载**（`"S669": ddgBenchDataset(..., csv_fname=.../s669_clean_dir.csv)`）——官方评测 S669 前对其 DDG 做了 ×−1。
+3. 评测代码对实验值无其他符号操作（直接进 PearsonCorrCoef），ProteinMPNN baseline 以 `-logprob` 为 ddG 代理——方向自洽性要求统一约定为【正 = 去稳定化】（突变残基概率越高 → ddG 越负 → 越稳定）。
+4. 佐证（v0.4-03 已记录）：镜像 CSV 原始读法下，疏水核心 I/L/V→A（−4.28/−3.21/−2.33）与螺旋 A→G（−0.3~−1.8）为热力学不可能值，反号后均为教科书值。
+
+**对既有记录的修正**：v0.4-03 曾记载"ThermoMPNN 官方代码无符号翻转、报正 Pearson，与我们的翻转结论存在张力"——**该记载有误**：官方翻转位于 `datasets.py` 加载层而非基准 CSV 生成层；其论文的正 Pearson 本就是在翻转后约定下报告的，与我们 r=+0.34 无矛盾。悬案就此关闭。
+
+**对 `SIGN_FLIP` 维护条款的更新**：原回滚条款"如来源方澄清约定，删除 SIGN_FLIP 即回滚"——来源方口径已查证澄清（本节），SIGN_FLIP 由"经验性修正"升级为"与官方实现核对一致"；仅当上游 `s669_clean_dir.csv` 数值约定变化（以本节证据链复查为准）才需重审。
+
 
 ## 1. 决定与理由
 

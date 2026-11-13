@@ -21,11 +21,13 @@ SOURCE = "S669"
 REFERENCE = "Pancotti et al. 2022, doi:10.1093/bib/bbab555"
 MUT_RE = re.compile(r"^([A-Za-z])(\d+)([A-Za-z])$")
 
-# ⚠️ 符号约定修正（2026-11-13，证据见 docs/data_provenance.md §6）：
-# ThermoMPNN 镜像的 DDG 列为【负 = 去稳定化】约定（与 Rosetta/FoldX 相反）。
-# 依据：139 样本系统性负相关 + 疏水核心 I/L/V→A（-4.28 等）与螺旋 A→G
-# （-0.3~-1.8）在"正=去稳定化"读法下为热力学不可能值，反号后均为教科书值。
-# 如来源方澄清约定，删除 SIGN_FLIP 即回滚。
+# ⚠️ 符号约定修正（2026-11-13 求证闭环，证据见 docs/data_provenance.md §6.1）：
+# ThermoMPNN 镜像的 DDG 列原始约定为【负 = 去稳定化】（与 Rosetta/FoldX 相反）。
+# 依据①（官方实现核对）：ThermoMPNN datasets.py 的 ddgBenchDataset 加载时对 DDG
+#   做 `* -1`，且 analysis/thermompnn_benchmarking.py 显示 S669 正是经该类加载——
+#   官方评测前翻转到【正 = 去稳定化】，与本翻转一致。
+# 依据②（热力学佐证）：疏水核心 I/L/V→A（-4.28 等）与螺旋 A→G（-0.3~-1.8）
+#   在"正=去稳定化"读法下为热力学不可能值，反号后均为教科书值。
 SIGN_FLIP = -1.0
 
 
