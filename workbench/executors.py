@@ -258,8 +258,12 @@ def _best_by_score(score_sc: str, pdbs: list) -> str:
 
 def run_cartesian_ddg(relaxed_pdb: str, mutfile_path: str, out_dir: str,
                       seed: int, iterations: int = 3,
-                      timeout: int = 3600) -> dict:
-    """cartesian_ddg 单突变（常规稳定性模式）。成功返回产物信息。"""
+                      timeout: int = 3600, dump_pdbs: bool = False) -> dict:
+    """cartesian_ddg 单突变（常规稳定性模式）。成功返回产物信息。
+
+    dump_pdbs=True 时额外导出松弛的 WT/MUT 结构（v0.5-03 MD 对照用；
+    常规评测保持 False——产物更少、目录更干净）。
+    """
     os.makedirs(out_dir, exist_ok=True)
     out_dir_abs = os.path.abspath(out_dir)
     log_path = os.path.join(out_dir_abs, "ddg.log")
@@ -269,7 +273,7 @@ def run_cartesian_ddg(relaxed_pdb: str, mutfile_path: str, out_dir: str,
         "-ddg:mut_file", os.path.abspath(mutfile_path),
         "-ddg:iterations", str(iterations),
         "-ddg:cartesian",
-        "-ddg:dump_pdbs", "false",
+        "-ddg:dump_pdbs", "true" if dump_pdbs else "false",
         "-ddg:bbnbrs", "1",
         "-score:weights", "ref2015_cart",
         "-relax:min_type", "lbfgs_armijo_nonmonotone",
