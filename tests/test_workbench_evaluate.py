@@ -75,6 +75,13 @@ check("load: 5 行载入", len(rows) == 5 and info["rows_loaded"] == 5)
 
 matched, excluded2 = match_samples(samples, rows)
 check("match: 3 个样本全部链感知匹配", len(matched) == 3, str([m["key"] for m in matched]))
+
+# 同一突变的重复 run → 预测聚合取均值，不重复计数
+dup_samples = [dict(s) for s in samples if s["chain"] == "A" and s["resnum_pdb"] == 30]
+dup_samples.append({**dup_samples[0], "run_dir": "/x/rerun", "ddg_reu": 4.0})
+m_dup, _ = match_samples(dup_samples, rows)
+check("match: 重复预测聚合为 1 条", len(m_dup) == 1 and m_dup[0]["n_predictions"] == 2
+      and abs(m_dup[0]["ddg_reu"] - 3.0) < 1e-9, str(m_dup))
 by_mut = {m["mut_aa1"] + str(m["resnum_pdb"]) + m["chain"]: m for m in matched}
 check("match: 链A30 得 K→E 行 (1.5)", abs(by_mut["E30A"]["exp_ddg_kcal_mol"] - 1.5) < 1e-9)
 check("match: 链B30 得 R→A 行 (-0.8)", abs(by_mut["A30B"]["exp_ddg_kcal_mol"] + 0.8) < 1e-9)

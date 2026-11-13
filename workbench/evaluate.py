@@ -154,29 +154,40 @@ def collect_samples(run_paths: "list[str]") -> "tuple[list, list]":
 def match_samples(samples: list, rows: list) -> "tuple[list, list]":
     """五元组精确匹配。返回 (matched, exclusions)。
 
-    matched: [{sample..., key, exp_ddg_kcal_mol, exp_n_measurements}]
-    同 key 多条测量取均值并记录条数；wt 不一致/缺测量 → 排除并记录原因。
+    matched: [{key, ddg_reu(均值), n_predictions, exp_ddg_kcal_mol(均值), exp_n_measurements, ...}]
+    - 同一突变的多次独立 run（如重跑/恢复重算）→ 预测取均值并记录 n_predictions
+    - 同 key 多条实验测量 → 取均值并记录 exp_n_measurements
+    - wt 不一致/缺测量 → 排除并记录原因
     """
     by_key = {}
     for r in rows:
         by_key.setdefault((r["pdb_id"], r["chain"], r["resnum_pdb"], r["wt_aa1"], r["mut_aa1"]),
                           []).append(r)
 
-    matched, exclusions = [], []
+    exclusions = []
+    pred_by_key = {}
     for s in samples:
         key = (s["pdb_id"], s["chain"], s["resnum_pdb"], s["wt_aa1"], s["mut_aa1"])
-        hits = by_key.get(key, [])
-        if not hits:
+        if key not in by_key:
             exclusions.append({**s, "key": key, "reason": "基准中无该五元组（含链）记录"})
             continue
-        # wt 一致性由 key 保证（wt 在 key 内）；再防御一次基准行 wt 与结构不符的脏数据
-        exp_vals = [h["exp_ddg_kcal_mol"] for h in hits]
+        pred_by_key.setdefault(key, []).append(s)
+
+    matched = []
+    for key, ss in pred_by_key.items():
+        exp_vals = [h["exp_ddg_kcal_mol"] for h in by_key[key]]
+        ddgs = [s["ddg_reu"] for s in ss]
+        rep = dict(ss[0])
         matched.append({
-            **s, "key": list(key),
+            **rep,
+            "key": list(key),
+            "ddg_reu": sum(ddgs) / len(ddgs),
+            "n_predictions": len(ddgs),
             "exp_ddg_kcal_mol": sum(exp_vals) / len(exp_vals),
             "exp_n_measurements": len(exp_vals),
-            "exp_sources": sorted({h.get("source", "") for h in hits if h.get("source")}),
+            "exp_sources": sorted({h.get("source", "") for h in by_key[key] if h.get("source")}),
         })
+    matched.sort(key=lambda m: m["key"])
     return matched, exclusions
 
 

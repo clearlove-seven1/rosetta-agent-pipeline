@@ -1,8 +1,24 @@
 # 实验数据库：来源、许可与使用决定（v0.4 前置决策，2026-11-12）
 
-> 决定：**两个数据库 CSV 均不再随仓库分发**（已从 git 跟踪移除，本地文件保留原位）。
-> 决定人：GLM（受用户委托）；依据 = 两个数据库的官方使用条款与学术数据库的保守惯例。
-> 本文档替代"文件即数据"：任何使用者按 §4 自行获取，即可完整复现 v0.4 评测。
+> 决定：SKEMPI / PDBbind **不随仓库分发**（理由见 §1）；v0.4 起接入任务匹配的 S669 稳定性基准（§6）。
+> 决定人：GLM（受用户委托）；依据 = 各数据库官方使用条款与学术数据库的保守惯例。
+> 本文档替代"文件即数据"：任何使用者按获取步骤自行获取，即可完整复现评测。
+
+## 6. `rosetta_manuals/stability_benchmark_s669.csv`（S669 稳定性基准，2026-11-12 接入）
+
+| 项 | 内容 |
+|---|---|
+| 用途 | **v0.4 唯一任务匹配评测集**：单点突变稳定性 ΔΔG（kcal/mol，PDB 编号）——与 workbench 计算口径一致 |
+| 原始数据集 | S669：Pancotti, Benevenuta, Birolo, Alberini, Repetto, Sanavia et al., *"Predicting protein stability changes upon single-point mutation: a thorough comparison of the available tools on a new dataset"*, **Briefings in Bioinformatics 2022**, doi:10.1093/bib/bbab555 |
+| 获取镜像 | Kuhlman-Lab/ThermoMPNN 仓库 `data_all/testing/s669_clean_dir.csv`（镜像仓库 **MIT License**） |
+| 下载日期 | 2026-11-12（经 GitHub API 原样获取） |
+| 原始文件 | `rosetta_manuals/s669_raw_original.csv`（670 行：表头+669 条） |
+| 转换 | `scripts/prepare_s669.py` → 669 条写入本文件，0 条异常；`PDB`列（结构ID+链）与 `MUT`列（wt+编号+mut）拆分为五元组 schema |
+| 本地列 | pdb_id, chain, resnum_pdb, wt_aa1, mut_aa1, exp_ddg_kcal_mol, source, reference |
+| 覆盖 | 669 条 / ~95 个结构；本项目选用 **2HBB**（X-ray、单链 A、51 残基、46 条，WT 已逐条对结构核实全部一致） |
+| 分发决定 | **不随仓库分发**（与 §1 同政策；`.gitignore` 已覆盖） |
+| 引用要求 | 使用任何基于本文件的评测结果，必须引用上述 Pancotti et al. 2022 与所用结构的原始文献 |
+
 
 ## 1. 决定与理由
 
