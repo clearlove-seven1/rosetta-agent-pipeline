@@ -280,6 +280,17 @@ python -m workbench.gromacs --resume runs/gromacs/<run_id>   # 逐阶段哈希�
 - GPU 生效以 **mdrun 日志 + 运行期 nvidia-smi 采样双证据**判定（manifest `gpu_used_assessment`）；`ns > 5` 需显式 `--confirm-long-run`。
 - **流程成功 ≠ 动力学收敛 ≠ 科学结论**；分析图与 summary 仅作流程观察，不得用于筛选/评分/亲和力判断。
 
+### 8.7 只读任务面板 + MM/PBSA（v0.5-04，实验性）
+
+```bash
+python -m workbench.dashboard --port 7860     # 只读面板：http://<服务器IP>:7860（启动时快照）
+python -m workbench.mmpbsa --md-run runs/gromacs/<run_id> --calc gb   # 或 --calc pb
+```
+
+- 面板只读扫描 runs/（Rosetta/MD/MMPBSA）、评测结果与图表，**不触发任何计算**；
+- MMPBSA 调用 `~/.conda/envs/hdac8` 的 gmx_MMPBSA 1.7.0（AmberTools 26.0），对既有 MD 轨迹做单体系端点法能量分析（stability 模式）；
+- **边界：探索性工具输出——不含熵贡献、协议未经验证；结果不是结合/折叠自由能；跨体系差异不得解读为突变效应。** 集成细节见 `workbench/mmpbsa.py` 模块注释。
+
 ---
 
 ## 9. 排错
