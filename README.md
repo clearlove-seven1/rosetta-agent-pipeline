@@ -257,49 +257,9 @@ python rosetta_mcp_server.py --transport sse --port 8000     # SSE 模式（远�
 
 `create_task → parameterize_ligand → run_cartesian_relax → predict_disorder → run_saturation_mutagenesis → evaluate_against_skempi / evaluate_against_pdbbind`
 
-### 8.5 Workbench 确定性 CLI（v0.2+，推荐科研入口，无 LLM）
+### 8.5 Workbench（已迁出）
 
-```bash
-python -m workbench.cli --protein examples/1ubq/1ubq.pdb --chain A --resnum 76 --to E
-python -m workbench.cli --resume runs/<run_id>          # 断点恢复（哈希校验）
-python -m workbench.evaluate --benchmark rosetta_manuals/stability_benchmark_s669.csv --runs runs
-```
-
-口径与边界见文件头 `SCOPE`：单体蛋白 · 单点突变 · cartesian_ddg 常规模式 · ΔΔG (REU)。计算筛选 ≠ 实验验证。
-
-### 8.6 GROMACS MD 执行器（v0.5，实验性）
-
-```bash
-python -m workbench.gromacs \
-  --protein runs/<v04_run>/inputs/clean_protein.pdb --chain A --label 2hbb_A \
-  --ns 1.0                                   # EM→NVT→NPT→生产 MD，全阶段固定种子
-python -m workbench.gromacs --resume runs/gromacs/<run_id>   # 逐阶段哈希复用
-```
-
-- 输入要求：**单链、干燥（无 HETATM/水）、全标准残基**（Rosetta 清洗产物 `inputs/clean_protein.pdb` 即符合）；校验在调用任何 gmx 之前完成。
-- GPU 生效以 **mdrun 日志 + 运行期 nvidia-smi 采样双证据**判定（manifest `gpu_used_assessment`）；`ns > 5` 需显式 `--confirm-long-run`。
-- **流程成功 ≠ 动力学收敛 ≠ 科学结论**；分析图与 summary 仅作流程观察，不得用于筛选/评分/亲和力判断。
-
-### 8.7 只读任务面板 + MM/PBSA（v0.5-04，实验性）
-
-```bash
-python -m workbench.dashboard --port 7860     # 只读面板：http://<服务器IP>:7860（启动时快照）
-python -m workbench.mmpbsa --md-run runs/gromacs/<run_id> --calc gb   # 或 --calc pb
-```
-
-- 面板只读扫描 runs/（Rosetta/MD/MMPBSA）、评测结果与图表，**不触发任何计算**；
-- MMPBSA 调用 `~/.conda/envs/hdac8` 的 gmx_MMPBSA 1.7.0（AmberTools 26.0），对既有 MD 轨迹做单体系端点法能量分析（stability 模式）；
-- **边界：探索性工具输出——不含熵贡献、协议未经验证；结果不是结合/折叠自由能；跨体系差异不得解读为突变效应。** 集成细节见 `workbench/mmpbsa.py` 模块注释。
-
-### 8.8 智能体网页（v0.6，实验性）
-
-```bash
-python -m workbench.agent --port 7860     # http://<服务器IP>:7860
-```
-
-五个页签：**介绍 / 智能体（对话）/ 任务面板 / 评测 / 图表**。智能体（glm-4.7-flash + 工具循环）可查询任务状态与结果、系统状态、评测摘要，并**在用户明确要求时**提交 Rosetta/MD 计算（网页限 0.1–3 ns，走既有确定性 CLI）。
-
-红线：一切任务状态必须来自工具返回，查不到就如实说"不存在"，禁止编造；LLM 不可用时 CLI 与面板不受影响。
+Protein Design Workbench（CLI / GROMACS MD / MM/PBSA / 网页智能体）已于 2026-11-14 迁出至独立仓库 **`~/projects/ros-gro`**（含全部 runs 数据与文档）。本仓库保留旧 Rosetta-Agent 流水线（§8.1–8.4）。访问智能体网页：`http://<服务器IP>:7860`（由 ros-gro 提供）。
 
 ---
 
