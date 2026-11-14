@@ -291,6 +291,16 @@ python -m workbench.mmpbsa --md-run runs/gromacs/<run_id> --calc gb   # 或 --ca
 - MMPBSA 调用 `~/.conda/envs/hdac8` 的 gmx_MMPBSA 1.7.0（AmberTools 26.0），对既有 MD 轨迹做单体系端点法能量分析（stability 模式）；
 - **边界：探索性工具输出——不含熵贡献、协议未经验证；结果不是结合/折叠自由能；跨体系差异不得解读为突变效应。** 集成细节见 `workbench/mmpbsa.py` 模块注释。
 
+### 8.8 智能体网页（v0.6，实验性）
+
+```bash
+python -m workbench.agent --port 7860     # http://<服务器IP>:7860
+```
+
+五个页签：**介绍 / 智能体（对话）/ 任务面板 / 评测 / 图表**。智能体（glm-4.7-flash + 工具循环）可查询任务状态与结果、系统状态、评测摘要，并**在用户明确要求时**提交 Rosetta/MD 计算（网页限 0.1–3 ns，走既有确定性 CLI）。
+
+红线：一切任务状态必须来自工具返回，查不到就如实说"不存在"，禁止编造；LLM 不可用时 CLI 与面板不受影响。
+
 ---
 
 ## 9. 排错
