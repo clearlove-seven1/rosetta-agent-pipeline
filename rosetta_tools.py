@@ -1808,6 +1808,20 @@ def evaluate_against_pdbbind(pdb_ids: str, score_paths: str = "") -> str:
 DOCS_DIR = "rosetta_manuals"
 
 
+def _zh_tokenize(text: str):
+    """检索分词：中文 jieba 搜索粒度切分(保留英文/数字)，jieba 不可用回退正则切分。
+
+    背景：BM25 默认按空白切词，中文整句成单个 token 导致检索命中靠运气
+    （2026-11-21 评测 6/24 未命中的根因）；jieba cut_for_search 实测解决。
+    """
+    try:
+        import jieba
+        return [t.strip() for t in jieba.cut_for_search(text) if t.strip()]
+    except Exception:
+        import re as _re
+        return [t for t in _re.split(r"\W+", text.lower()) if t]
+
+
 def _load_doc_chunks():
     """加载 rosetta_manuals 下全部 .txt/.md 语料（递归子目录）并切块。
 
@@ -1823,6 +1837,19 @@ def _load_doc_chunks():
                 docs.extend(TextLoader(path, encoding="utf-8").load())
             except Exception:
                 continue
+    # 2026-11-21：docs/ 下自写文档(任务契约/运维手册)入全量语料；
+    # docs/playbooks 有独立优先层，此处跳过避免双重索引。
+    if os.path.isdir("docs"):
+        for root, dirs, files in os.walk("docs"):
+            dirs[:] = [d for d in dirs if os.path.join(root, d) != PLAYBOOK_DIR]
+            for fn in sorted(files):
+                if not fn.lower().endswith((".txt", ".md")):
+                    continue
+                path = os.path.join(root, fn)
+                try:
+                    docs.extend(TextLoader(path, encoding="utf-8").load())
+                except Exception:
+                    continue
     if not docs:
         return []
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=60)
@@ -1840,7 +1867,7 @@ def init_bm25_retriever():
         if not splits:
             print("⚠️ RAG：rosetta_manuals 下未找到 .txt/.md 语料，检索不可用")
             return None
-        return BM25Retriever.from_documents(splits, k=4)
+        return BM25Retriever.from_documents(splits, k=4, preprocess_func=_zh_tokenize)
     except Exception as e:
         print(f"⚠️ RAG：BM25 检索器构建失败: {e}")
         return None
@@ -1876,7 +1903,7 @@ def init_playbook_retriever():
         if not splits:
             print("⚠️ RAG：docs/playbooks 下未找到计划手册，计划手册优先层不可用")
             return None
-        return BM25Retriever.from_documents(splits, k=2)
+        return BM25Retriever.from_documents(splits, k=2, preprocess_func=_zh_tokenize)
     except Exception as e:
         print(f"⚠️ RAG：计划手册检索器构建失败: {e}")
         return None
@@ -1998,6 +2025,78 @@ def suggest_plan(protein_pdb_path: str = "") -> str:
     lines.append(f"【缺项/注意】\n{missing}")
     lines.append("【停止条件】见计划手册；缺配体/位点歧义/参数化失败一律停下问用户，不猜测")
     lines.append("【边界】计划是建议；科学参数由工具默认值锁定，LLM 不得修改；执行前需用户确认")
+    return "\n".join(lines)
+
+
+# ==========================================
+# 4.6 结果报告工具（2026-11-21：summarize_results，一键结构化报告）
+# ==========================================
+@tool
+def summarize_results(task_dir: str = "") -> str:
+    """结果报告工具：对指定任务(缺省=当前工作区)生成一键结构化报告——终态/参数口径/
+    ΔΔG 排序(top 稳定与 top 去稳定)/突变体结构清单(如已导出)/接力 MD 建议/局限声明。
+    扫描完成后或用户问"结果怎么样/给我报告"时调用;只读。"""
+    td = (task_dir or "").strip()
+    if not td:
+        td = current_workspace.get() or ""
+    cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", os.path.basename(td))
+    if os.path.isdir(cand):
+        td = cand
+    if not td or not os.path.isdir(td):
+        return "【执行报错】任务目录不存在: %s" % td
+    state = task_runtime.state_effective(td)
+    m = (state["state"].get("manifest") or {}) if state.get("state") else {}
+    sum_path = os.path.join(td, "summary", "ddg_results.txt")
+    if not os.path.exists(sum_path):
+        return ("【报告】任务 %s：生效状态=%s；尚无汇总(summary/ddg_results.txt 不存在)。%s"
+                % (os.path.basename(td), state["status"], state.get("note", "")))
+    rows = []
+    with open(sum_path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i == 0:
+                continue
+            p = line.rstrip("\n").split("\t")
+            if len(p) >= 2:
+                try:
+                    rows.append((p[0].strip(), float(p[1])))
+                except ValueError:
+                    continue
+    if not rows:
+        return "【报告】汇总文件存在但无数据行(可能空壳/failed)——见 mut_*.log 的 [exit code]。"
+    srt = sorted(rows, key=lambda x: x[1])
+    top_stable, top_destab = srt[:3], srt[-3:][::-1]
+    def _fmt(rs):
+        return "； ".join("%s=%+.3f" % (n, v) for n, v in rs)
+    struct_root = os.path.join(td, "saturation_mutagenesis", "mutant_structures")
+    struct_dirs = sorted(os.listdir(struct_root)) if os.path.isdir(struct_root) else []
+    struct_map = {}
+    for d in struct_dirs:
+        parts = d.split("_")
+        if len(parts) >= 4:
+            struct_map["%s_%s%s_%s" % (parts[0], parts[1], parts[2], parts[3])] = \
+                "saturation_mutagenesis/mutant_structures/" + d
+    relay = []
+    for n, v in top_stable:
+        if v < 0:
+            p = struct_map.get(n)
+            relay.append("%s（ΔΔG=%+.3f）%s" % (n, v, "→ 结构: " + p if p else "→ 结构未导出(重扫可开 export_structures=True)"))
+    lines = [
+        "===== 任务结果报告：%s =====" % os.path.basename(td),
+        "终态: %s%s" % (state["status"], ("（%s）" % state["note"]) if state.get("note") else ""),
+        "计划/执行: %s | %s（%d 个突变）" % (m.get("contract_version") or "旧任务(无契约字段)",
+                                        m.get("ddg_program"), len(rows)),
+        "口径: ΔΔG = min(MUT 三次) − min(WT 三次)，单位 REU——稳定性预测口径，"
+        "不是结合自由能，不是实验值",
+        "最稳定 top3: %s" % (_fmt(top_stable) or "(无)"),
+        "最去稳定 top3: %s" % (_fmt(top_destab) or "(无)"),
+    ]
+    if struct_dirs:
+        lines.append("突变体结构已导出(%d 个)，根目录 = saturation_mutagenesis/mutant_structures/" % len(struct_dirs))
+    if relay:
+        lines.append("接力 MD 建议(把结构交给用户自己的 GROMACS 会话)：\n  - " + "\n  - ".join(relay))
+    else:
+        lines.append("接力 MD 建议: 无显著稳定化候选(无 ΔΔG<0)；如需结构请用 export_structures 重扫")
+    lines.append("局限: 计算筛选≠实验验证；固定骨架/打分函数局限见 playbook A；结论需实验确认")
     return "\n".join(lines)
 
 

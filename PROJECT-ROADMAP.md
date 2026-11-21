@@ -9,8 +9,8 @@
 
 | 端口 | 进程 | 归属 | 启动 | 状态 |
 |---|---|---|---|---|
-| 7779 | (11-21 14:xx 再次重启) | rosetta1 `rosetta_server.py` | 11-21 14:xx | **契约+结构导出+知识库计划层代码已上线**(生产验收 PASS 见阶段 1) |
-| 7782 | (14:xx 随之恢复) | rosetta1 MCP streamable-http | 11-21 14:xx | 20 工具(新增 suggest_plan);Trae stdio 实例随其重连恢复 |
+| 7779 | (11-21 15:xx 再次重启) | rosetta1 `rosetta_server.py` | 11-21 15:xx | **契约+导出+计划层+能力包①-⑥已上线**(含 SqliteSaver 对话持久化,跨重启续聊实证 PASS) |
+| 7782 | (15:xx 随之恢复) | rosetta1 MCP streamable-http | 11-21 15:xx | 21 工具(新增 suggest_plan/summarize_results);Trae stdio 实例随其重连恢复 |
 | 7778 | pid 3147302 | gromacs `gromacs_server.py` | 11-21 11:31 | 自报 r4;**用户在另一会话管辖推进(r3→r5 备份),本工作台不介入** |
 | 7795 | pid 581741 | `server.py`(cwd 未核实,与旧 7779 同批启动) | 11-18 | 运行中(本次未动) |
 | 7860 | pid 51924 | ros-gro `workbench.agent`(智能体网页) | 11-18 | 运行中 |
@@ -100,7 +100,10 @@ GPU 空闲,无 mdrun/gmx 计算进程。
   stub 端到端 23/23 + 回归 159 项 + 真实 1MC9 A_67 全 19 突变导出与落点独立复核 19/19 PASS。
 - 2026-11-21 14:xx:**知识库计划层完成(§七.5)**——playbooks+体系判定+suggest_plan+检索分层上线,
   真实问计划实测 PASS;"输入新蛋白(和配体)→ 问出计划与参数"能力就位,参数默认值仍由工具护栏锁定。
-- 下一步:§七 剩余=octop 冒烟(用户侧)+ 可选项 3/4;配体参数化实测文档待用户提供真实配体文件。
+- 2026-11-21 15:xx:**能力包①-⑥完成(§七.6)**——提示词/RAG 评测(24/24)/start_all+运维手册/
+  结果报告工具/SqliteSaver 持久化(跨重启实证)/playbook D;start_all 首跑实测抓到 7779 启动崩溃
+  (NameError)并当场修复,评测新增"启动链路导入守卫"防复发;ros-gro 不上传(终局决定)。
+- 下一步:§七 剩余=octop 冒烟(用户侧)+ 配体参数化实测文档(等真实配体文件)。
 
 ## 七、目标调整后的剩余工作清单(Rosetta 侧,按价值排序)
 
@@ -119,6 +122,13 @@ GPU 空闲,无 mdrun/gmx 计算进程。
    体系判定(单链/蛋白+配体/复合物)+ `suggest_plan` 工具(MCP 20 工具、7779 对话 GENERAL_TOOLS 均挂载)
    + BM25 计划手册优先检索;**真实 1MC9 问计划实测 PASS**(判定/步骤/缺项/停止条件全输出);
    测试 16/16+全套 175 项。配体参数化实测文档待用户提供真实配体文件后补写。
+6. ✅ **能力包①-⑥(2026-11-21 完成)**:① REPLY_SYSTEM 提示词打磨(必引 playbook/停止条件/计划纪律);
+   ② RAG 评测集 24 题(**命中率 24/24**,jieba 中文分词修复根因:默认空白切词致中文整句成 token);
+   ③ `start_all.sh` 幂等拉起(实测抓到并修复 7779 启动崩溃)+ OPS-RUNBOOK 运维手册;
+   ④ `summarize_results` 一键结构化报告(排序/口径/接力 MD 建议映射已导出结构);
+   ⑤ `SqliteSaver` 检查点持久化(**跨重启续聊实证 PASS**:暗号 maple7 重启后答对);
+   ⑥ playbook D 定点设计(fixbb 三条 limitation 如实入册)。测试 19/19,全套 7 套全绿。
+   依赖新增:langgraph-checkpoint-sqlite、jieba(已入 rosetta-agent env);TASK-CONTRACT 迁至 docs/。
 
 **已明确不做**:统一任务层、GROMACS 对接消费端、结构筛选层(为 MD 准备)、统一工作台、跨工具综合报告、合并智能体。
 (现有 rosetta1 平台 7779/MCP 本就是独立智能体,保持现状继续服务,不属于"合并"范畴。)

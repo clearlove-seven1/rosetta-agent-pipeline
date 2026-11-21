@@ -74,6 +74,7 @@ from rosetta_tools import (
     analyze_interface,
     run_fixbb_design,
     suggest_plan,
+    summarize_results,
     current_workspace,
 )
 
@@ -236,6 +237,7 @@ _ATOMIC_TOOLS = [
     analyze_interface,
     run_fixbb_design,
     suggest_plan,
+    summarize_results,
 ]
 
 for _t in _ATOMIC_TOOLS:

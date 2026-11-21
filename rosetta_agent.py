@@ -23,7 +23,9 @@ import task_runtime  # 任务 ID/路径校验/位点预检/持久状态（2026-1
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.memory import MemorySaver  # noqa: F401（保留兼容参考）
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 import gradio as gr
 
 from rosetta_tools import (
@@ -37,6 +39,7 @@ from rosetta_tools import (
     auto_repair,
     search_rosetta_docs,
     suggest_plan,
+    summarize_results,
     evaluate_against_skempi,
     evaluate_against_pdbbind,
     predict_disorder,
@@ -69,7 +72,7 @@ llm = ChatOpenAI(
 # 2. 工具分组：把"绝对禁止调用"从文本约束变成 schema 层的物理约束
 # ==========================================
 # 主图 reply 节点可用的通用检索/读取/分析工具（v0.2 扩展:打分/SASA/界面/设计）
-GENERAL_TOOLS = [suggest_plan, search_rosetta_docs, read_file,
+GENERAL_TOOLS = [suggest_plan, search_rosetta_docs, summarize_results, read_file,
                  score_structure, calculate_sasa, analyze_interface, run_fixbb_design]
 
 # 子图 repair 节点专用的诊断/修复工具
@@ -623,8 +626,13 @@ def main_route_after_router(state: AgentState) -> Literal["pipeline", "reply"]:
 
 REPLY_SYSTEM = (
     "你是 Rosetta 知识助手。"
-    "可用工具：search_rosetta_docs（文档检索）、read_file（读取任务工作区文件，"
-    "如 summary/ddg_results.txt、cartesian_relax/score.sc、run_launcher.log）。"
+    "可用工具：suggest_plan（体系计划：用户问\"怎么做/计划/参数/这个体系\"时必须先调用）、"
+    "search_rosetta_docs（文档检索，计划手册 docs/playbooks/ 优先命中）、"
+    "summarize_results（结果报告）、"
+    "read_file（读取任务工作区文件，如 summary/ddg_results.txt、cartesian_relax/score.sc、run_launcher.log）。"
+    "【计划纪律】回答计划/参数类问题时，必须以 suggest_plan 的判定与对应 playbook 文件"
+    "（docs/playbooks/）为依据，回答中注明所引用的 playbook 文件名；禁止自创步骤或编造参数。"
+    "【停止条件】缺配体文件/位点歧义/参数化失败/需要修改科学默认旗标时，一律停下向用户确认，不得猜测。"
     "【数据读取纪律】summary/ddg_results.txt 按 链→残基号→数值 排序，文件开头不是最小值；"
     "要找「ΔΔG 最低/最稳定」的突变，必须用足够大的 max_lines（如 1200）一次读全表（950 行可一次读完），"
     "再对全部行按第二列数值升序排序后取前 N；严禁把文件前几行当作最小值。"
@@ -774,7 +782,12 @@ workflow.add_edge("reply_tools", "reply")
 workflow.add_edge("summarize", END)
 
 
-memory = MemorySaver()
+# ⑤ 对话检查点持久化(2026-11-21)：SqliteSaver 落盘，服务重启后按 thread_id 续聊可恢复。
+# 事件流(SSE)仍不可回放——这是流传输边界，与检查点持久化是两回事。
+_CKPT_PATH = os.getenv("ROSETTA_CHECKPOINT_DB") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "output", "checkpoints.sqlite")
+os.makedirs(os.path.dirname(_CKPT_PATH), exist_ok=True)
+memory = SqliteSaver(sqlite3.connect(_CKPT_PATH, check_same_thread=False))
 agent_executor = workflow.compile(checkpointer=memory)
 
 

@@ -43,3 +43,8 @@
 - 突变体结构:`export_structures=True` → `mutant_structures/<wt>_<位点>_<突变>/`(内容级落点核对);
 - 下游 MD:把选中突变体 PDB 交给用户自己的 GROMACS 会话(人工接力,本系统不做系统级整合);
 - 编号审计:任务目录 `rosetta_tasks.txt` 中 `# [编号映射]` 注释行 = PDB 编号 ↔ Rosetta 行号真值。
+
+## 相关手册
+
+- 定点改造(只引入特定氨基酸,非全部 19 种) → `playbook_D_fixbb_design.md`;
+- 蛋白+配体 → `playbook_B_protein_ligand.md`;多链复合物 → `playbook_C_complex.md`。

@@ -56,9 +56,10 @@ def write_pdb(name, chains, hetatm=(), waters=0):
 print("\n----- A. 计划手册文件 -----")
 pb_dir = os.path.join(PROJ, "docs", "playbooks")
 pb_files = sorted(os.listdir(pb_dir)) if os.path.isdir(pb_dir) else []
-check("A1 三份 playbook 存在", pb_files == ["playbook_A_single_chain.md",
-                                           "playbook_B_protein_ligand.md",
-                                           "playbook_C_complex.md"], str(pb_files))
+check("A1 四份 playbook 存在(A/B/C/D)", pb_files == ["playbook_A_single_chain.md",
+                                                    "playbook_B_protein_ligand.md",
+                                                    "playbook_C_complex.md",
+                                                    "playbook_D_fixbb_design.md"], str(pb_files))
 all_ok = all(("停止条件" in open(os.path.join(pb_dir, f), encoding="utf-8").read()
               and "默认参数" in open(os.path.join(pb_dir, f), encoding="utf-8").read())
              for f in pb_files)
