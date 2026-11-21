@@ -103,11 +103,8 @@ GPU 空闲,无 mdrun/gmx 计算进程。
 - 2026-11-21 15:xx:**能力包①-⑥完成(§七.6)**——提示词/RAG 评测(24/24)/start_all+运维手册/
   结果报告工具/SqliteSaver 持久化(跨重启实证)/playbook D;start_all 首跑实测抓到 7779 启动崩溃
   (NameError)并当场修复,评测新增"启动链路导入守卫"防复发;ros-gro 不上传(终局决定)。
-- 2026-11-21 18:xx:**⑦ 配体参数化实测完成(Playbook B 首次真实跑通)**——RCSB 3HTB(单链 HIV 蛋白酶
-  +JZ4)全流程 PASS:判定/参数化(JZ 自动侦测)/复合物弛豫/19 突变全 exit 0(自动 -extra_res_fa)/19 结构
-  导出/契约 ok;实测抓到并修复 parameterize_ligand 裸调 python 真 bug(sys.executable)、summarize_results
-  目录计数小瑕疵;踩坑记录已写入 playbook B。科学合理性:催化位点 Y25 全正 ΔΔG。
-- 下一步:octop 冒烟(用户侧)。§七 除 octop 外全部完成。
+- 2026-11-21:octop 冒烟 PASS(用户侧截图:21 工具可见、suggest_plan/summarize_results 实调成功)。
+  **§七 全部完成,无挂账**;后续输入=用户使用反馈。
 
 ## 七、目标调整后的剩余工作清单(Rosetta 侧,按价值排序)
 
@@ -119,7 +116,10 @@ GPU 空闲,无 mdrun/gmx 计算进程。
    - 诚实修正:cartesian_ddg 实测**本就落盘** MUT 结构(此前"不产出"系 11-16 旧行为误判),开关只做归集/核对/登记;
    - 验证:stub 端到端 **23/23**(含真实 run_ddg.py 执行)+ 全套回归 **159 项** +
      真实 1MC9 A_67(**19/19 落点独立复核全对**,contract_check ok=True,task_20261121_1347455b7b)。
-2. **octop 重连冒烟**(你侧操作,10 分钟级)。
+2. ✅ **octop 重连冒烟(2026-11-21 完成,用户截图验收)**:octop(TQC-worklab :8090)的
+   「Rosetta 突变扫描」agent 重连 7782 后可见 21 工具(含 suggest_plan/summarize_results),
+   并成功实调两者(分析 3HTB 配体任务 + 生成结果报告);agent 口头计数 19/18 有小出入,
+   服务端实测恒为 21(18 原子+3 管理),不影响使用。
 3. 可选:Rosetta 侧科学评估(阶段 6 缩水版)——ΔΔG 基准复验/重复性/耗时成本,写简历或评估可信度时再做。
 4. 可选:报告/下载易用性小改进(按使用痛点来,不预先设计)。
 5. ✅ **知识库计划层(2026-11-21 完成)**:三份体系 playbook(`docs/playbooks/`,入库)+ `classify_system`
