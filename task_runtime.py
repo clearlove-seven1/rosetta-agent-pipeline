@@ -704,3 +704,55 @@ def contract_check(task_dir: str) -> dict:
     ok = not missing
     return {"ok": ok, "legacy": legacy, "missing": missing, "warnings": warnings,
             "manifest": m, "effective_status": eff_status}
+
+
+# ==========================================
+# 6. 体系类型判定（playbook 计划生成用，2026-11-21）
+# ==========================================
+# 只读静态解析，不做任何科学结论；供 rosetta_tools.suggest_plan / 计划生成用。
+_COMMON_WATER = {"HOH", "WAT", "H2O", "TIP", "TIP3"}
+
+
+def classify_system(pdb_path: str) -> dict:
+    """判定体系类型与缺项清单（计划生成第一步）。
+
+    类型判定：≥2 条标准链 → C(多链复合物)；单链+非水 HETATM → B(蛋白+配体)；否则 A(单链)。
+    返回 {"system_type","playbook","playbook_file","note","chains","n_residues",
+          "hetatm_resnames","n_hetatm","waters","n_waters","anomalies","missing"}。
+    """
+    nmap = build_numbering(pdb_path)
+    hetatm, waters = {}, {}
+    with open(pdb_path, "r", errors="ignore") as f:
+        for line in f:
+            if line.startswith("HETATM"):
+                rn = line[17:20].strip()
+                if rn in _COMMON_WATER:
+                    waters[rn] = waters.get(rn, 0) + 1
+                else:
+                    hetatm[rn] = hetatm.get(rn, 0) + 1
+    chains = list(nmap.chains)
+    n_hetatm = sum(hetatm.values())
+    n_waters = sum(waters.values())
+    if len(chains) >= 2:
+        st, pb, pbf, note = ("multi_chain_complex", "C",
+                             "docs/playbooks/playbook_C_complex.md", "多链复合物")
+    elif n_hetatm > 0:
+        st, pb, pbf, note = ("protein_ligand", "B",
+                             "docs/playbooks/playbook_B_protein_ligand.md", "蛋白+小分子配体")
+    else:
+        st, pb, pbf, note = ("single_chain", "A",
+                             "docs/playbooks/playbook_A_single_chain.md", "单链蛋白")
+    missing = []
+    if st == "protein_ligand":
+        missing.append("配体参数化：确认配体文件(mol2/pdb)与质子化状态(pH 由用户决定)；"
+                       "执行走 parameterize_ligand")
+    if st == "multi_chain_complex":
+        missing.append("位点必须带链号(如 A_76)；界面分析用 analyze_interface；"
+                       "弛豫不会重新对接，链间取向=输入构象")
+    if nmap.anomalies:
+        missing.append("结构解析异常：" + "；".join(nmap.anomalies) + "（异常残基不参与编号/突变）")
+    return {"system_type": st, "playbook": pb, "playbook_file": pbf, "note": note,
+            "chains": chains, "n_residues": nmap.size,
+            "hetatm_resnames": sorted(hetatm), "n_hetatm": n_hetatm,
+            "waters": sorted(waters), "n_waters": n_waters,
+            "anomalies": list(nmap.anomalies), "missing": missing}

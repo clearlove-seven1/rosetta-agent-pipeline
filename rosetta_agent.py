@@ -36,6 +36,7 @@ from rosetta_tools import (
     diagnose_and_fix,
     auto_repair,
     search_rosetta_docs,
+    suggest_plan,
     evaluate_against_skempi,
     evaluate_against_pdbbind,
     predict_disorder,
@@ -68,7 +69,7 @@ llm = ChatOpenAI(
 # 2. 工具分组：把"绝对禁止调用"从文本约束变成 schema 层的物理约束
 # ==========================================
 # 主图 reply 节点可用的通用检索/读取/分析工具（v0.2 扩展:打分/SASA/界面/设计）
-GENERAL_TOOLS = [search_rosetta_docs, read_file,
+GENERAL_TOOLS = [suggest_plan, search_rosetta_docs, read_file,
                  score_structure, calculate_sasa, analyze_interface, run_fixbb_design]
 
 # 子图 repair 节点专用的诊断/修复工具

@@ -1846,6 +1846,42 @@ def init_bm25_retriever():
         return None
 
 
+PLAYBOOK_DIR = "docs/playbooks"
+
+
+def _load_playbook_chunks():
+    """加载 docs/playbooks/ 计划手册（体系类型→计划模板），单独建检索层并优先命中。"""
+    docs = []
+    if not os.path.isdir(PLAYBOOK_DIR):
+        return docs
+    for fn in sorted(os.listdir(PLAYBOOK_DIR)):
+        if not fn.lower().endswith((".txt", ".md")):
+            continue
+        path = os.path.join(PLAYBOOK_DIR, fn)
+        try:
+            docs.extend(TextLoader(path, encoding="utf-8").load())
+        except Exception:
+            continue
+    if not docs:
+        return docs
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=60)
+    return text_splitter.split_documents(docs)
+
+
+def init_playbook_retriever():
+    """计划手册 BM25 检索器（独立于全量语料；手册不存在时返回 None，检索照常降级）。"""
+    try:
+        from langchain_community.retrievers import BM25Retriever
+        splits = _load_playbook_chunks()
+        if not splits:
+            print("⚠️ RAG：docs/playbooks 下未找到计划手册，计划手册优先层不可用")
+            return None
+        return BM25Retriever.from_documents(splits, k=2)
+    except Exception as e:
+        print(f"⚠️ RAG：计划手册检索器构建失败: {e}")
+        return None
+
+
 def init_vector_db():
     """构建向量数据库（可选增强；embedding API 不可用时优雅降级为 None）"""
     try:
@@ -1877,12 +1913,25 @@ def init_vector_db():
 
 
 bm25_retriever = init_bm25_retriever()
+playbook_retriever = init_playbook_retriever()
 vector_db = init_vector_db()
 
 
 @tool
 def search_rosetta_docs(query: str) -> str:
-    """RAG 检索工具：检索 Rosetta 官方文档/报错笔记，遇到未知的参数、报错代码、用法时调用。"""
+    """RAG 检索工具：检索 Rosetta 官方文档/报错笔记，遇到未知的参数、报错代码、用法时调用。
+    计划手册(docs/playbooks/)优先命中——体系类型/流程/参数口径类问题先看计划手册。"""
+    parts = []
+    # 0. 计划手册优先层（体系类型/流程类问题）
+    if playbook_retriever is not None:
+        try:
+            _pb = playbook_retriever.invoke(query)
+            if _pb:
+                parts.append("【计划手册优先·docs/playbooks/】\n"
+                             + "\n---\n".join(d.page_content[:1500] for d in _pb))
+        except Exception:
+            pass
+
     docs = []
     source = None
 
@@ -1902,10 +1951,54 @@ def search_rosetta_docs(query: str) -> str:
         except Exception:
             docs = []
 
-    if not docs:
+    if docs:
+        parts.append(f"【检索成功·{source}】以下是 Rosetta 知识库的参考资料：\n"
+                     + "\n---\n".join(d.page_content[:1500] for d in docs))
+    if not parts:
         return "【检索结果】Rosetta 知识库中未找到相关内容（请检查 rosetta_manuals 语料）。"
-    context = "\n---\n".join(d.page_content[:1500] for d in docs)
-    return f"【检索成功·{source}】以下是 Rosetta 知识库的参考资料：\n{context}"
+    return "\n\n".join(parts)
+
+
+# ==========================================
+# 4.5 体系计划工具（2026-11-21：suggest_plan，配合 docs/playbooks/ 计划手册）
+# ==========================================
+@tool
+def suggest_plan(protein_pdb_path: str = "") -> str:
+    """体系计划工具：判定结构所属体系类型(单链/蛋白+配体/复合物)，给出对应计划手册
+    (docs/playbooks/)指引、步骤概要、缺项清单与停止条件。
+    用户询问"这个体系怎么做/有什么计划/用什么参数"时调用；只读，不启动任何计算。"""
+    path, err = _resolve_structure_input(protein_pdb_path)
+    if err:
+        return err
+    try:
+        info = task_runtime.classify_system(path)
+    except Exception as e:
+        return f"【执行报错】体系判定失败: {type(e).__name__}: {e}"
+    step_hint = {
+        "A": ("预检(位点格式 76/A_76/A_100A) → 弛豫 run_cartesian_relax(nstruct=2) → "
+              "突变扫描 run_saturation_mutagenesis(可选 export_structures=True 导出突变体结构) → "
+              "解读 summary/ddg_results.txt(ΔΔG=REU，不能当结合自由能)"),
+        "B": ("确认配体文件(mol2/pdb)与质子化 → parameterize_ligand 生成 .params → "
+              "复合物弛豫 → run_saturation_mutagenesis(自动携带 -extra_res_fa) → "
+              "解读 + analyze_interface 界面/口袋分析"),
+        "C": ("确认链 ID → 弛豫 → analyze_interface 界面分析 → 位点必须带链(A_76/B_76) → "
+              "run_saturation_mutagenesis 界面残基扫描"),
+    }[info["playbook"]]
+    missing = "\n".join(f"  - {m}" for m in info["missing"]) or "  - (无)"
+    lines = [
+        f"【体系判定】{info['note']}（playbook {info['playbook']}）",
+        f"【结构信息】链: {'/'.join(info['chains']) or '无'} | 标准残基: {info['n_residues']}"
+        f" | 非水HETATM: {info['n_hetatm']}（{', '.join(sorted(info['hetatm_resnames'])) or '无'}）"
+        f" | 水原子: {info['n_waters']}",
+    ]
+    if info["anomalies"]:
+        lines.append(f"【解析异常】{'；'.join(info['anomalies'])}（异常残基不参与编号/突变）")
+    lines.append(f"【建议计划】{info['playbook_file']}")
+    lines.append(f"  步骤概要: {step_hint}")
+    lines.append(f"【缺项/注意】\n{missing}")
+    lines.append("【停止条件】见计划手册；缺配体/位点歧义/参数化失败一律停下问用户，不猜测")
+    lines.append("【边界】计划是建议；科学参数由工具默认值锁定，LLM 不得修改；执行前需用户确认")
+    return "\n".join(lines)
 
 
 # ==========================================
