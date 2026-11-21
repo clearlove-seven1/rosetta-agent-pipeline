@@ -103,7 +103,11 @@ GPU 空闲,无 mdrun/gmx 计算进程。
 - 2026-11-21 15:xx:**能力包①-⑥完成(§七.6)**——提示词/RAG 评测(24/24)/start_all+运维手册/
   结果报告工具/SqliteSaver 持久化(跨重启实证)/playbook D;start_all 首跑实测抓到 7779 启动崩溃
   (NameError)并当场修复,评测新增"启动链路导入守卫"防复发;ros-gro 不上传(终局决定)。
-- 下一步:§七 剩余=octop 冒烟(用户侧)+ 配体参数化实测文档(等真实配体文件)。
+- 2026-11-21 18:xx:**⑦ 配体参数化实测完成(Playbook B 首次真实跑通)**——RCSB 3HTB(单链 HIV 蛋白酶
+  +JZ4)全流程 PASS:判定/参数化(JZ 自动侦测)/复合物弛豫/19 突变全 exit 0(自动 -extra_res_fa)/19 结构
+  导出/契约 ok;实测抓到并修复 parameterize_ligand 裸调 python 真 bug(sys.executable)、summarize_results
+  目录计数小瑕疵;踩坑记录已写入 playbook B。科学合理性:催化位点 Y25 全正 ΔΔG。
+- 下一步:octop 冒烟(用户侧)。§七 除 octop 外全部完成。
 
 ## 七、目标调整后的剩余工作清单(Rosetta 侧,按价值排序)
 

@@ -398,7 +398,7 @@ def parameterize_ligand(ligand_path: str = "ligand.pdb") -> str:
     # 3. 运行 Rosetta 参数化脚本（参数列表 + cwd，不经 shell，路径含空格也安全）
     script_path = os.path.join(ROSETTA_SCRIPTS, "molfile_to_params.py")
     abs_mol2_path = os.path.abspath(mol2_path)
-    cmd = ["python", script_path, "-n", ligand_name, "-p", ligand_name,
+    cmd = [sys.executable, script_path, "-n", ligand_name, "-p", ligand_name,
            "--keep-names", "--clobber", abs_mol2_path]
 
     try:
@@ -2068,7 +2068,8 @@ def summarize_results(task_dir: str = "") -> str:
     def _fmt(rs):
         return "； ".join("%s=%+.3f" % (n, v) for n, v in rs)
     struct_root = os.path.join(td, "saturation_mutagenesis", "mutant_structures")
-    struct_dirs = sorted(os.listdir(struct_root)) if os.path.isdir(struct_root) else []
+    struct_dirs = sorted(d for d in (os.listdir(struct_root) if os.path.isdir(struct_root) else [])
+                          if os.path.isdir(os.path.join(struct_root, d)))
     struct_map = {}
     for d in struct_dirs:
         parts = d.split("_")
