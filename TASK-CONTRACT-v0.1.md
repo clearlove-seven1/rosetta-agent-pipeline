@@ -52,7 +52,15 @@
 | `mutations_succeeded` / `mutations_failed` | runner 收尾回填;succeeded=实际 .ddg 数 |
 | `ddg_program` / `ddg_params` | 必填;程序名与旗标(逐字,含 iterations/cartesian/bbnbrs/weights/min_type/extra_res_fa) |
 | `rosetta_version` | runner 从计算日志 `core.init: Rosetta version:` 捕获;取不到留 null(不虚构) |
+| `structures_export` / `structures_exported` / `structures_verified` | 可选(结构产出开关开启时):开关状态/归集目录数/通过内容级落点核对数 |
+| `artifacts.mutant_structures` | 可选:归集根目录 `saturation_mutagenesis/mutant_structures/`,内含 `structures_manifest.json`(逐目录文件清单+落点核对结果;目录名= `<wt>_<链_编号>_<突变>`,MUT 文件名内数字为 Rosetta 绝对行号) |
 | 明细数据 | `summary/ddg_results.txt`(ΔΔG=REU,min(MUT)-min(WT));逐任务日志 `mut_*.log` |
+
+**结构产出说明(2026-11-21 实测修正)**:cartesian_ddg 本就会把 `WT_bj*.pdb`/`MUT_<行号><三字母>_bj*.pdb`
+落在突变目录(此前"不产出结构"的说法系 11-16 旧行为的误判)。`run_saturation_mutagenesis` 的
+`export_structures`(默认 False,行为不变)/`export_sites`(扫描位点子集)开关只控制:是否把指定位点的
+MUT 结构**归集+内容级落点核对(该链该编号残基唯一且等于突变后氨基酸)+登记**;未选位点结构不删除、
+留在突变目录。
 
 ## 5. 配体(存在时)
 

@@ -9,8 +9,8 @@
 
 | 端口 | 进程 | 归属 | 启动 | 状态 |
 |---|---|---|---|---|
-| 7779 | (11-21 12:3x 再次重启) | rosetta1 `rosetta_server.py` | 11-21 12:3x | **契约 v0.1 代码已上线**(阶段 3;生产验收 PASS 见阶段 1) |
-| 7782 | (12:3x 随之恢复) | rosetta1 MCP streamable-http | 11-21 12:3x | 已恢复并加载契约代码;Trae stdio 实例随其重连恢复 |
+| 7779 | (11-21 13:4x 再次重启) | rosetta1 `rosetta_server.py` | 11-21 13:4x | **契约 v0.1 + 结构产出开关代码已上线**(生产验收 PASS 见阶段 1) |
+| 7782 | (13:4x 随之恢复) | rosetta1 MCP streamable-http | 11-21 13:4x | 已恢复并加载新代码;schema 已暴露 export_structures/export_sites;Trae stdio 实例随其重连恢复 |
 | 7778 | pid 3147302 | gromacs `gromacs_server.py` | 11-21 11:31 | 自报 r4;**用户在另一会话管辖推进(r3→r5 备份),本工作台不介入** |
 | 7795 | pid 581741 | `server.py`(cwd 未核实,与旧 7779 同批启动) | 11-18 | 运行中(本次未动) |
 | 7860 | pid 51924 | ros-gro `workbench.agent`(智能体网页) | 11-18 | 运行中 |
@@ -95,15 +95,20 @@ GPU 空闲,无 mdrun/gmx 计算进程。
   rosetta_version/sha256/成功失败计数如实落盘)。用户明确:gromacs 由其另一会话推进,本工作台不介入。
 - 2026-11-21 下午:**目标调整(用户拍板)**——不做 Rosetta×GROMACS 系统级结合、不做统一智能体/工作台;
   阶段 4(跨工具流程)与阶段 5(统一工作台)裁剪;剩余工作收敛为 Rosetta 侧独立能力清单(见 §七)。
-- 下一步:见 §七 剩余工作清单(第 1 项=突变体结构导出,待用户触发)。
+- 2026-11-21 13:5x:**§七.1 突变体结构导出完成**——export_structures/export_sites 上线;
+  stub 端到端 23/23 + 回归 159 项 + 真实 1MC9 A_67 全 19 突变导出与落点独立复核 19/19 PASS。
+- 下一步:§七 剩余=octop 冒烟(用户侧)+ 可选项 3/4;Rosetta 侧核心能力至此齐备。
 
 ## 七、目标调整后的剩余工作清单(Rosetta 侧,按价值排序)
 
-1. **突变体结构导出**(唯一高价值缺口,支撑人工接力):
-   - 单点/选点突变 → 产出突变体 PDB(fixbb 或 cartesian_ddg dump_pdbs 单突变路径);
-   - **验证突变确实落在预期位点**(序列/编号核对),落点不对就报错不产出;
-   - 产物登记进 task_status.json(artifacts+契约字段),下载入口打通;
-   - 用 1MC9 A_67 做真实验证。产出后你可直接把 PDB 投给自己另一会话的 GROMACS。
+1. ✅ **突变体结构导出(2026-11-21 完成,真实验收 PASS)**:
+   - `run_saturation_mutagenesis` 新增 `export_structures`(默认 False,行为与旧版逐字节一致)/
+     `export_sites`(扫描位点子集,非法输入明确报错)两参数;MCP schema 已暴露(13:4x 上线);
+   - 归集至 `saturation_mutagenesis/mutant_structures/<wt>_<site>_<mut>/` + **内容级落点核对**
+     + `structures_manifest.json` + manifest/artifacts 登记;下载走既有 files/download 通道(已验证可见);
+   - 诚实修正:cartesian_ddg 实测**本就落盘** MUT 结构(此前"不产出"系 11-16 旧行为误判),开关只做归集/核对/登记;
+   - 验证:stub 端到端 **23/23**(含真实 run_ddg.py 执行)+ 全套回归 **159 项** +
+     真实 1MC9 A_67(**19/19 落点独立复核全对**,contract_check ok=True,task_20261121_1347455b7b)。
 2. **octop 重连冒烟**(你侧操作,10 分钟级)。
 3. 可选:Rosetta 侧科学评估(阶段 6 缩水版)——ΔΔG 基准复验/重复性/耗时成本,写简历或评估可信度时再做。
 4. 可选:报告/下载易用性小改进(按使用痛点来,不预先设计)。

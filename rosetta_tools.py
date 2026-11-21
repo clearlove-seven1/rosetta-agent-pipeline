@@ -560,8 +560,22 @@ print(" 弛豫全流程结束！")
         return f"【系统异常】{str(e)}"
 
 @tool
-def run_saturation_mutagenesis(target_resnum: str, jobs: int = 10, delay: float = 1.5) -> str:
-    """高通量错峰并发流水线：自动等待弛豫完成进行突变计算。"""
+def run_saturation_mutagenesis(target_resnum: str, jobs: int = 10, delay: float = 1.5,
+                               export_structures: bool = False,
+                               export_sites: str = "") -> str:
+    """高通量错峰并发流水线：自动等待弛豫完成进行突变计算。
+
+    结构产出开关(2026-11-21):cartesian_ddg 实测本就会把 WT_/MUT_*.pdb 落在突变目录
+    (此前"不产出结构"的说法系 11-16 旧行为的误判)。
+      - export_structures=False(默认):行为与旧版完全一致(结构散落在突变目录,不整理不登记);
+      - export_structures=True:计算结束后把指定位点的突变体结构归集到
+        saturation_mutagenesis/mutant_structures/<wt>_<site>_<mut>/,做内容级落点核对
+        (结构中该链该编号残基唯一且等于突变后氨基酸),写 structures_manifest.json,
+        并把 structures_exported/structures_verified 登记进 manifest、
+        mutant_structures 登记进 artifacts;
+      - export_sites:仅在 export_structures=True 时可用;为扫描位点子集(如 "A_67" 或 "67,A_12"),
+        缺省=全部扫描位点。非所选位点的结构仍散落在突变目录(不删除,可复查)。
+    """
     relax_dir = get_workspace_path("cartesian_relax")
     mut_dir = get_workspace_path("saturation_mutagenesis")
     sum_dir = get_workspace_path("summary")
@@ -604,6 +618,32 @@ def run_saturation_mutagenesis(target_resnum: str, jobs: int = 10, delay: float 
                 "可先调用 get_rosetta_numbering 核对；多链同号必须带链 ID（如 A_76）。")
     anom_note = f"（结构解析异常: {'；'.join(nmap.anomalies)}）" if nmap.anomalies else ""
 
+    # 结构产出开关:cartesian_ddg 实测本就落盘 WT_/MUT_*.pdb;开关只控制是否把
+    # 指定位点的突变体结构归集+落点核对+登记(见函数 docstring 与 TASK-CONTRACT-v0.1 §4)。
+    export_set = None
+    export_note = ""
+    if export_structures:
+        if export_sites.strip():
+            _es_tokens = _split_tokens(export_sites)
+            _es_resolved, _es_errors = _resolve_targets(_es_tokens, nmap)
+            if _es_errors:
+                _detail = "; ".join(f"{e['token']}({e['reason']})" for e in _es_errors)
+                return f"【执行报错】export_sites 解析失败: {_detail}。"
+            _scan_set = {(t["chain"], t["numkey"]) for t in resolved}
+            _unknown = [f"{t['chain']}_{t['numkey']}" for t in _es_resolved
+                        if (t["chain"], t["numkey"]) not in _scan_set]
+            if _unknown:
+                return ("【执行报错】export_sites 位点 " + "/".join(_unknown)
+                        + " 不在本次扫描位点("
+                        + "/".join(f"{t['chain']}_{t['numkey']}" for t in resolved)
+                        + ")内;结构导出仅支持本次扫描的位点。")
+            export_set = {(t["chain"], t["numkey"]) for t in _es_resolved}
+            export_note = "(结构导出:仅位点 " + export_sites.strip() + ")"
+        else:
+            export_note = "(结构导出:全部扫描位点)"
+    elif export_sites.strip():
+        return "【执行报错】export_sites 仅在 export_structures=True 时有意义。"
+
     all_aas = ["A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"]
 
     # 唯一一次 PDB -> Rosetta 绝对行号映射：编号映射基准 = complex_rosetta_ready.pdb
@@ -635,7 +675,11 @@ def run_saturation_mutagenesis(target_resnum: str, jobs: int = 10, delay: float 
                     "-relax:cartesian", "-mute", "all",
                     "-out:prefix", f"ddg_{wt_aa}_{pdb_num}_{mut_aa}_",
                 ]
-                f_tasks.write(json.dumps({"argv": argv, "log": f"mut_{wt_aa}_{pdb_num}_{mut_aa}.log"},
+                is_export = bool(export_structures
+                                 and (export_set is None or (t["chain"], t["numkey"]) in export_set))
+                f_tasks.write(json.dumps({"argv": argv, "log": f"mut_{wt_aa}_{pdb_num}_{mut_aa}.log",
+                                          "export": is_export, "site": pdb_num,
+                                          "wt": wt_aa, "mut": mut_aa, "idx": t_res},
                                          ensure_ascii=False) + "\n")
                 n_planned += 1
 
@@ -773,6 +817,71 @@ with ThreadPoolExecutor(max_workers={int(jobs)}) as pool:
 
 subprocess.run([sys.executable, "auto_clean.py"])
 
+subprocess.run([sys.executable, "auto_clean.py"])
+
+# 结构产出整理(export 任务):cartesian_ddg 本就会把 WT_/MUT_*.pdb 落在工作目录(实测),
+# 此处把指定位点的 MUT_*.pdb 收进 mutant_structures/<wt>_<site>_<mut>/ 并做内容级落点核对。
+# 注意:MUT 文件名含 (位点, 突变氨基酸) 二元组,并发任务间不重名(11-21 实测 57 个全部幸存)。
+_aa3map = {{"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU", "F": "PHE", "G": "GLY", "H": "HIS",
+            "I": "ILE", "K": "LYS", "L": "LEU", "M": "MET", "N": "ASN", "P": "PRO", "Q": "GLN",
+            "R": "ARG", "S": "SER", "T": "THR", "V": "VAL", "W": "TRP", "Y": "TYR"}}
+_mut_dir_abs = os.path.join(task_dir, "saturation_mutagenesis")
+_struct_root = os.path.join(_mut_dir_abs, "mutant_structures")
+_export_recs = [r for r in tasks if r.get("export")]
+_n_struct_dirs = 0
+_n_verified = 0
+if _export_recs:
+    os.makedirs(_struct_root, exist_ok=True)
+    _entries = []
+    for rec in _export_recs:
+        _aa3 = _aa3map.get(rec.get("mut"), "")
+        if not _aa3:
+            continue
+        _dname = "%s_%s_%s" % (rec.get("wt"), rec.get("site"), rec.get("mut"))
+        _sdir = os.path.join(_struct_root, _dname)
+        os.makedirs(_sdir, exist_ok=True)
+        _files = sorted(glob.glob(os.path.join(_mut_dir_abs, "MUT_%s%s_*.pdb" % (rec.get("idx"), _aa3))))
+        _verified = "missing"
+        _detail = "未找到 MUT_%s%s_*.pdb(cartesian_ddg 未落盘该突变体?)" % (rec.get("idx"), _aa3)
+        _resnames = set()
+        if _files:
+            _site_str = str(rec.get("site", ""))
+            _chain = _site_str.split("_", 1)[0]
+            _numkey = _site_str.split("_", 1)[-1]
+            _digits = ""
+            for _c in _numkey:
+                if _c.isdigit():
+                    _digits += _c
+                else:
+                    break
+            if not _digits:
+                _verified = "skipped_icode"
+                _detail = "插入码位点暂不做内容级落点核对(仅按文件名归集)"
+            else:
+                with open(_files[0], "r", errors="ignore") as _pf:
+                    for _line in _pf:
+                        if _line.startswith("ATOM") or _line.startswith("HETATM"):
+                            if _line[21:22].strip() == _chain and _line[22:26].strip() == _digits:
+                                _resnames.add(_line[17:20].strip())
+                if _aa3 in _resnames and len(_resnames) == 1:
+                    _verified = "yes"
+                    _n_verified += 1
+                else:
+                    _verified = "no"
+                    _detail = "位点 %s_%s 处残基为 %s(预期 %s)" % (_chain, _numkey, sorted(_resnames), _aa3)
+            for _f in _files:
+                shutil.move(_f, os.path.join(_sdir, os.path.basename(_f)))
+        _entries.append({{"dir": "mutant_structures/" + _dname, "site": rec.get("site"),
+                          "wt": rec.get("wt"), "mut": rec.get("mut"),
+                          "rosetta_idx": rec.get("idx"),
+                          "files": [os.path.basename(f) for f in _files],
+                          "verified": _verified, "detail": _detail}})
+        _n_struct_dirs += 1
+    with open(os.path.join(_struct_root, "structures_manifest.json"), "w", encoding="utf-8") as _sf:
+        json.dump({{"note": "MUT 文件名内数字为 Rosetta 绝对行号;目录名/映射以 PDB 编号为准(见 rosetta_tasks.txt 审计行)",
+                    "verified": "内容级落点核对:结构中该链该编号残基唯一且等于突变后氨基酸",
+                    "entries": _entries}}, _sf, ensure_ascii=False, indent=1)
+
 summary_path = os.path.join(task_dir, "summary", "ddg_results.txt")
 n_ddg = len(glob.glob("*.ddg"))
 n_planned = len(tasks)
@@ -788,24 +897,28 @@ try:
             break
 except Exception:
     _rosetta_version = None
+_artifacts = {{"ddg_results": "summary/ddg_results.txt",
+              "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}}
 _manifest_patch = {{"mutations_succeeded": n_ddg, "mutations_failed": max(n_planned - n_ddg, 0),
                     "rosetta_version": _rosetta_version}}
+if _export_recs:
+    _artifacts["mutant_structures"] = "saturation_mutagenesis/mutant_structures"
+    _manifest_patch["structures_exported"] = _n_struct_dirs
+    _manifest_patch["structures_verified"] = _n_verified
 if n_ddg > 0 and n_planned > 0 and n_ddg < n_planned:
     _finalize_status(task_dir, os.getpid(), status="partial", stage="mutagenesis",
                      status_note=f"部分成功（{{n_ddg}}/{{n_planned}} 个 .ddg）；失败项查看 mut_*.log 末尾的 [exit code]",
-                     artifacts={{"ddg_results": "summary/ddg_results.txt",
-                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}},
+                     artifacts=_artifacts,
                      manifest_patch=_manifest_patch)
 elif n_ddg > 0:
     _finalize_status(task_dir, os.getpid(), status="completed", stage="mutagenesis",
                      status_note=f"突变计算完成（{{n_ddg}} 个 .ddg）",
-                     artifacts={{"ddg_results": "summary/ddg_results.txt",
-                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}},
+                     artifacts=_artifacts,
                      manifest_patch=_manifest_patch)
 else:
     _finalize_status(task_dir, os.getpid(), status="failed", stage="mutagenesis",
                      error_type="NoSuccessfulMutants",
-                     error_detail=f"0 个成功突变（{{'ddg_results.txt 在位' if os.path.exists(summary_path) else '无汇总'}}）；逐个查看 mut_*.log 末尾的 [exit code]",
+                     error_detail=f"0 个成功突变（{{'ddg_results.txt 在位' if os.path.exists(summary_path) else '无汇总'}})；逐个查看 mut_*.log 末尾的 [exit code]",
                      manifest_patch=_manifest_patch)
 print(" 突变全流程结束！")
 ''')
@@ -851,13 +964,14 @@ print(" 突变全流程结束！")
                 rosetta_version=None,  # 静态无法获得（需运行时日志确认），留空不虚构
                 gromacs_ready=False,   # 结构未经 MD 准备，不可直接作为 GROMACS 输入
                 numbering_audit="rosetta_tasks.txt 中 # [编号映射] 注释行",
+                structures_export=bool(export_structures),
             )
     except Exception as e:
         _record_status(stage="mutagenesis", status="failed",
                        error_type=type(e).__name__, error_detail=str(e))
         return f"【系统异常】突变任务提交失败: {str(e)}"
     return (f"【流水线通关】所有 {len(resolved)} 个位点的突变任务已挂载！{mode_note}"
-            + (anom_note if anom_note else ""))
+            + (anom_note if anom_note else "") + (export_note if export_note else ""))
 
 # ==========================================
 # 3. 诊断与修复工具
