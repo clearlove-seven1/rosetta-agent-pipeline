@@ -354,7 +354,8 @@ async def create_task(file: UploadFile,
                       ligand: UploadFile = None,
                       mutation: str = Form(...),
                       params: str = Form(""),
-                      msg: str = Form("")):
+                      msg: str = Form(""),
+                      engine: str = Form("rosetta")):
     if not file.filename or not file.filename.lower().endswith(".pdb"):
         raise HTTPException(400, "请上传 .pdb 蛋白结构文件")
     # 任务 ID：标签白名单清洗 + 时间戳含随机后缀 + 独占建目录（2026-11-20）。
@@ -365,10 +366,14 @@ async def create_task(file: UploadFile,
     with open(os.path.join(workspace_dir, "protein.pdb"), "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    if engine not in ("rosetta", "tmol"):
+        raise HTTPException(400, "engine 仅支持 rosetta 或 tmol")
     task_runtime.state_write(workspace_dir, status="created", stage="created",
+                             manifest={"engine": engine},
                              input_summary={"protein": os.path.basename(file.filename)[:80],
                                             "mutation": str(mutation)[:200],
                                             "ligand": bool(ligand and ligand.filename),
+                                            "engine": engine,
                                             "params": str(params)[:120],
                                             "msg": str(msg)[:120],
                                             "entry": "fastapi_7779"})

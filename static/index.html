@@ -66,6 +66,13 @@
             </div>
             <small class="dim">选链后自动按 "A_76" 格式提交（工具内部完成编号转换）；也可直接手写 A_76。</small>
           </label>
+          <label class="field"><span>打分引擎</span>
+            <select id="engine">
+              <option value="rosetta">Rosetta（CPU：弛豫 + cartesian_ddg 扫描）</option>
+              <option value="tmol">TMol（GPU：beta_nov2016_cart 原生扫描，秒级）</option>
+            </select>
+            <small class="dim">两引擎 ΔΔG 数值口径不同，不可直接比较；TMol 不产出突变体结构</small>
+          </label>
           <label class="field"><span>附加指令（可选）</span>
             <textarea id="msg" rows="2" placeholder="例如：优先关注口袋周围 6Å 内位点"></textarea></label>
           <details class="more-opts">

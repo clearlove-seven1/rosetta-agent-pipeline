@@ -75,6 +75,7 @@ from rosetta_tools import (
     run_fixbb_design,
     suggest_plan,
     summarize_results,
+    run_tmol_scan,
     current_workspace,
 )
 
@@ -238,6 +239,7 @@ _ATOMIC_TOOLS = [
     run_fixbb_design,
     suggest_plan,
     summarize_results,
+    run_tmol_scan,
 ]
 
 for _t in _ATOMIC_TOOLS:
@@ -248,7 +250,8 @@ for _t in _ATOMIC_TOOLS:
 # 3. 管理工具：create_task / list_tasks / set_workspace
 #    （普通函数 + 显式注册，ctx 由 SDK 注入、不进 schema；会话内绑定"当前任务"）
 # ==========================================
-def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = "", ctx=None) -> str:
+def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = "",
+                engine: str = "rosetta", ctx=None) -> str:
     """【管理工具】创建新任务工作区并设为本会话当前工作区：把蛋白/配体拷贝到
     output/task_<时间戳+随机后缀>_<label>/（同标签同时间重复创建不会再互相覆盖）；
     未提供配体时自动调 PyMOL 从复合物中分离有机配体。
@@ -270,9 +273,13 @@ def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = 
     label = (task_label or "").strip() or os.path.splitext(os.path.basename(protein_pdb_path))[0]
     # P0：标签白名单清洗 + 独占建目录（旧实现为分钟级时间戳+原始标签，可被 ../../ 注入）
     task_id, workspace_dir = task_runtime.create_task_dir(label)
+    if engine not in ("rosetta", "tmol"):
+        return "【执行报错】engine 仅支持 rosetta 或 tmol。"
     task_runtime.state_write(workspace_dir, status="created", stage="created",
+                             manifest={"engine": engine},
                              input_summary={"protein": os.path.basename(protein_pdb_path)[:80],
                                             "ligand": os.path.basename(ligand_path or "")[:80],
+                                            "engine": engine,
                                             "entry": "mcp"})
 
     target_protein = os.path.join(workspace_dir, "protein.pdb")

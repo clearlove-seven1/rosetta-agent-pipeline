@@ -40,6 +40,7 @@ from rosetta_tools import (
     search_rosetta_docs,
     suggest_plan,
     summarize_results,
+    run_tmol_scan,
     evaluate_against_skempi,
     evaluate_against_pdbbind,
     predict_disorder,
@@ -117,7 +118,7 @@ llm = ChatOpenAI(
 # 2. 工具分组：把"绝对禁止调用"从文本约束变成 schema 层的物理约束
 # ==========================================
 # 主图 reply 节点可用的通用检索/读取/分析工具（v0.2 扩展:打分/SASA/界面/设计）
-GENERAL_TOOLS = [suggest_plan, search_rosetta_docs, summarize_results, read_file,
+GENERAL_TOOLS = [run_tmol_scan, suggest_plan, search_rosetta_docs, summarize_results, read_file,
                  score_structure, calculate_sasa, analyze_interface, run_fixbb_design]
 
 # 子图 repair 节点专用的诊断/修复工具
@@ -408,6 +409,8 @@ STEP3_SYSTEM = (
     "权限：你只能调用 run_saturation_mutagenesis 或 get_rosetta_numbering；"
     "get_rosetta_numbering 只用于核对映射（只读），核对后仍必须把【原始 PDB 编号】传给 run_saturation_mutagenesis，"
     "绝对禁止把它的绝对行号输出再传给 run_saturation_mutagenesis，否则会导致双重偏移错位！"
+    "【引擎路由】任务引擎为 TMol 或用户点名 TMol 时：直接调用 run_tmol_scan(target_resnum)"
+    "（GPU 原生突变扫描，秒级），不走三段流水线；"
     "调用完成后请直接结束本轮。"
 )
 
@@ -678,6 +681,9 @@ REPLY_SYSTEM = (
     "【计划纪律】回答计划/参数类问题时，必须以 suggest_plan 的判定与对应 playbook 文件"
     "（docs/playbooks/）为依据，回答中注明所引用的 playbook 文件名；禁止自创步骤或编造参数。"
     "【停止条件】缺配体文件/位点歧义/参数化失败/需要修改科学默认旗标时，一律停下向用户确认，不得猜测。"
+    "【引擎路由】任务引擎为 TMol(GPU,创建时选择)或用户点名 TMol 时：调用 run_tmol_scan(target_resnum) "
+    "直接做 GPU 原生突变扫描(秒级)，不要走三段流水线；Rosetta 引擎任务保持三段流水线。"
+    "两引擎 ΔΔG 数值口径不同(ref2015_cart vs beta_nov2016_cart)，回答时注明所用引擎。"
     "【数据读取纪律】summary/ddg_results.txt 按 链→残基号→数值 排序，文件开头不是最小值；"
     "要找「ΔΔG 最低/最稳定」的突变，必须用足够大的 max_lines（如 1200）一次读全表（950 行可一次读完），"
     "再对全部行按第二列数值升序排序后取前 N；严禁把文件前几行当作最小值。"
@@ -1034,6 +1040,8 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
             "工具内部自动转换为 Rosetta 绝对行号；"
             "get_rosetta_numbering 仅供核对（只读），核对后必须传回原始 PDB 编号，"
             "绝对禁止把它的绝对行号输出再传给 run_saturation_mutagenesis，否则会导致双重偏移错位。"
+            "【引擎路由】任务引擎为 TMol 或用户点名 TMol 时：直接调用 run_tmol_scan(target_resnum)"
+            "（GPU 原生突变扫描，秒级），不走三段流水线；"
         )
 
         task_runtime.state_write(task_dir, status="running", stage="conversation",
@@ -1176,6 +1184,8 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
         "工具内部自动转换为 Rosetta 绝对行号；"
         "get_rosetta_numbering 仅供核对（只读），核对后必须传回原始 PDB 编号，"
         "绝对禁止把它的绝对行号输出再传给 run_saturation_mutagenesis，否则会导致双重偏移错位。"
+        "【引擎路由】任务引擎为 TMol 或用户点名 TMol 时：直接调用 run_tmol_scan(target_resnum)"
+        "（GPU 原生突变扫描，秒级），不走三段流水线；"
     )
 
     config = {"configurable": {"thread_id": task_id}}

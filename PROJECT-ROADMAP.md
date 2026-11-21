@@ -105,6 +105,15 @@ GPU 空闲,无 mdrun/gmx 计算进程。
   (NameError)并当场修复,评测新增"启动链路导入守卫"防复发;ros-gro 不上传(终局决定)。
 - 2026-11-21:octop 冒烟 PASS(用户侧截图:21 工具可见、suggest_plan/summarize_results 实调成功)。
   **§七 全部完成,无挂账**;后续输入=用户使用反馈。
+- 2026-11-21 23:xx:**TMol GPU 引擎接入工作台(§七.7,用户点名)**——/opt/software/tmol
+  (atomworks 生态,GPU)=Rosetta 能量函数 PyTorch 重实现;修复其部署(torch 2.8 ABI 不匹配→
+  用户目录 ~/.tmol_torch 影子加载 torch 2.11+cu130);GPU 原生突变扫描全链路打通
+  (beta_nov2016_cart,mutate_residue+Dunbrack,单位点约 20-40s);run_tmol_scan 工具(MCP 22 工具/
+  7779 GENERAL_TOOLS)、任务级 engine 字段(rosetta/tmol)+前端下拉+三处提示词引擎路由;
+  summarize_results 双口径/TMol GPU 报告;端到端 PASS(1MC9 A_25 SER→LYS -0.753)。
+  诚实边界:tmol 口径数值与 ref2015_cart 不可比;tmol 引擎不产出突变体结构;固定骨架单点近似
+  (拥挤位点 PRO 突变 +314 为已知现象)。测试 eval_tmol 16/16,9 套全绿。依赖:jieba/
+  langgraph-checkpoint-sqlite/torch2.11-cu130(~/.tmol_torch)。
 - 2026-11-21 19:xx:**借鉴 /opt/software/docking 生态的 docking agent 方式,上线成本/耗时可见化**——
   ①LLM token 逐条记录 output/usage_stats.jsonl(回调式,失败不影响对话);②每轮对话收尾自动上屏
   〔token 用量〕本轮/任务累计(来自消息自带 usage_metadata);③suggest_plan 增【预计耗时】

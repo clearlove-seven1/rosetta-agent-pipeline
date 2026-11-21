@@ -242,6 +242,7 @@ $("task-form").addEventListener("submit", async (e) => {
   const lig = $("ligand-input").files[0];
   if (lig) fd.append("ligand", lig);
   fd.append("mutation", mut);
+  fd.append("engine", $("engine") ? $("engine").value : "rosetta");
   fd.append("params", paramsText);
   fd.append("msg", $("msg").value.trim());
 

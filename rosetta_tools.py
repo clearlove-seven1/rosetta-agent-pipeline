@@ -2034,6 +2034,9 @@ def suggest_plan(protein_pdb_path: str = "") -> str:
     if info["n_residues"] > 300:
         est += f"；注意:本结构 {info['n_residues']} 残基,各步耗时可能 ×2-3"
     lines.append(f"【预计耗时】{est}（2026-11-21 多次实测的粗估,以任务实际为准）")
+    lines.append("【打分引擎】Rosetta=ref2015_cart(CPU,弛豫+cartesian_ddg 扫描)或 "
+                 "TMol=beta_nov2016_cart(GPU,run_tmol_scan 原生突变扫描,秒级);"
+                 "引擎在任务创建时选择,两者数值口径不同,不可直接比较")
     lines.append("【停止条件】见计划手册；缺配体/位点歧义/参数化失败一律停下问用户，不猜测")
     lines.append("【边界】计划是建议；科学参数由工具默认值锁定，LLM 不得修改；执行前需用户确认")
     return "\n".join(lines)
@@ -2059,6 +2062,22 @@ def summarize_results(task_dir: str = "") -> str:
     m = (state["state"].get("manifest") or {}) if state.get("state") else {}
     sum_path = os.path.join(td, "summary", "ddg_results.txt")
     if not os.path.exists(sum_path):
+        tmol_p = os.path.join(td, "summary", "tmol_scan.json")
+        if os.path.exists(tmol_p):
+            try:
+                _tj = json.load(open(tmol_p, encoding="utf-8"))
+                _items = list(_tj.get("results", {}).items())
+                if _items:
+                    _site, _r = _items[0]
+                    _top = "； ".join("{aa}={ddG:+.3f}".format(**x) for x in _r.get("top_stable", []))
+                    _msg = ("【TMol GPU 报告】任务 %s（引擎 tmol，beta_nov2016_cart，%s）\n"
+                            "位点 %s（WT=%s）：最稳定 top3: %s\n"
+                            "完整数据: summary/tmol_scan.json；tmol 口径不产出突变体结构，"
+                            "ΔΔG 与 Rosetta 口径不可直接比较。") % (
+                        os.path.basename(td), _tj.get("device"), _site, _r.get("wt"), _top)
+                    return _msg
+            except Exception:
+                pass
         return ("【报告】任务 %s：生效状态=%s；尚无汇总(summary/ddg_results.txt 不存在)。%s"
                 % (os.path.basename(td), state["status"], state.get("note", "")))
     rows = []
@@ -2107,6 +2126,9 @@ def summarize_results(task_dir: str = "") -> str:
         "实际耗时: %s（创建 → 最近更新）" % (f"{_mins} 分钟" if _mins is not None else "未知"),
         "计划/执行: %s | %s（%d 个突变）" % (m.get("contract_version") or "旧任务(无契约字段)",
                                         m.get("ddg_program"), len(rows)),
+        "引擎: %s%s" % ((m.get("engine") or "rosetta"),
+                        "(GPU,TMol beta_nov2016_cart 口径)" if m.get("engine") == "tmol"
+                        else "(CPU,Rosetta ref2015_cart 口径)"),
         "口径: ΔΔG = min(MUT 三次) − min(WT 三次)，单位 REU——稳定性预测口径，"
         "不是结合自由能，不是实验值",
         "最稳定 top3: %s" % (_fmt(top_stable) or "(无)"),
@@ -2120,6 +2142,65 @@ def summarize_results(task_dir: str = "") -> str:
         lines.append("接力 MD 建议: 无显著稳定化候选(无 ΔΔG<0)；如需结构请用 export_structures 重扫")
     lines.append("局限: 计算筛选≠实验验证；固定骨架/打分函数局限见 playbook A；结论需实验确认")
     return "\n".join(lines)
+
+
+# ==========================================
+# 4.7 TMol GPU 引擎（2026-11-21：run_tmol_scan，beta_nov2016_cart GPU 原生突变扫描）
+# ==========================================
+TMOL_PY = os.getenv("TMOL_PY", "/opt/software/tmol/bin/python")
+TMOL_PYPATH = os.getenv("TMOL_PYPATH", os.path.expanduser("~/.tmol_torch"))
+TMOL_TIMEOUT = int(os.getenv("TMOL_TIMEOUT", "900"))
+
+
+@tool
+def run_tmol_scan(target_resnum: str) -> str:
+    """TMol GPU 引擎：对当前任务结构做指定位点的饱和突变 ΔΔG 扫描。
+
+    beta_nov2016_cart 权重(GPU 原生突变+Dunbrack 侧链重排,单位点约 20-40 秒);
+    与 Rosetta 引擎(ref2015_cart,CPU)口径不同,数值不可直接比较;
+    不产出突变体结构(结构请用 Rosetta 引擎的 export_structures)。
+    前提:任务已有 protein.pdb;位点为 PDB 晶体学编号(A_25 或 76)。
+    引擎为 TMol 的任务建议用本工具替代三段流水线。"""
+    ws = current_workspace.get() or ""
+    pdb = os.path.join(ws, "protein.pdb")
+    if not os.path.exists(pdb):
+        return "【执行报错】任务缺少 protein.pdb(工作区: %s)。请先创建任务并上传结构。" % ws
+    tokens = ",".join(t.strip() for t in target_resnum.split(",") if t.strip())
+    if not tokens:
+        return "【执行报错】未解析到位点(格式如 A_25 或 25)。"
+    out_json = os.path.join(ws, "summary", "tmol_scan.json")
+    os.makedirs(os.path.dirname(out_json), exist_ok=True)
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmol_scan_worker_20261121.py")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = TMOL_PYPATH + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        proc = subprocess.run([TMOL_PY, worker, pdb, tokens, out_json],
+                              capture_output=True, text=True, timeout=TMOL_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        return "【执行报错】TMol 扫描超时(>%ds);可用 TMOL_TIMEOUT 环境变量放宽。" % TMOL_TIMEOUT
+    except FileNotFoundError:
+        return ("【执行报错】未找到 TMol 环境 python(%s);确认 /opt/software/tmol 已部署,"
+                "或用 TMOL_PY 环境变量指定。" % TMOL_PY)
+    tail = (proc.stdout or "").strip().splitlines()[-8:]
+    if proc.returncode != 0 or "TMOL_SCAN_DONE" not in (proc.stdout or ""):
+        task_runtime.state_write(ws, tmol_last_error=(proc.stderr or proc.stdout)[-400:])
+        return ("【执行报错】TMol 扫描失败(rc=%d):\n%s\n%s"
+                % (proc.returncode, (proc.stderr or "")[-300:], "\n".join(tail)))
+    try:
+        data = json.load(open(out_json, encoding="utf-8"))
+    except Exception as e:
+        return f"【执行报错】TMol 扫描输出解析失败: {e}"
+    mprev = task_runtime.state_read(ws).get("manifest") or {}
+    task_runtime.state_write(ws, manifest={**mprev, "tmol_scan": "summary/tmol_scan.json",
+                                           "tmol_weights": data.get("weights")})
+    out_lines = [f"【TMol GPU 扫描完成】{data['weights']}({data['device']});"
+                 f"共 {len(tokens.split(','))} 个位点,明细见 summary/tmol_scan.json"]
+    for site, r in data["results"].items():
+        top = "； ".join(f"{x['aa']}={x['ddG']:+.3f}" for x in r["top_stable"])
+        out_lines.append(f"- {site}(WT={r['wt']}): 最稳定 top3: {top}")
+    out_lines.append("口径: beta_nov2016_cart(GPU)——与 Rosetta ref2015_cart 数值口径不同,不可直接比较;"
+                     "本引擎不产出突变体结构。")
+    return "\n".join(out_lines)
 
 
 # ==========================================
