@@ -1,10 +1,25 @@
 import os
+import re
+import sys
 import glob
+import json
 import shutil
 import time
 import subprocess
 import contextvars
 from dotenv import load_dotenv
+
+# 任务运行时公共层（任务 ID/路径校验/位点解析/持久状态）——2026-11-20 收敛到唯一实现
+import task_runtime
+from task_runtime import (
+    AA_3TO1 as _AA_3TO1,  # 兼容旧引用：编号表本体已迁至 task_runtime
+    build_numbering as _build_numbering_impl,
+    split_tokens as _split_tokens,
+    resolve_targets as _resolve_targets,
+    precheck_targets as _shared_precheck,
+    create_task_dir as _create_task_dir,
+    state_write, state_effective, set_manifest,
+)
 
 from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
@@ -59,9 +74,142 @@ def get_workspace_path(sub_dir: str = "") -> str:
     os.makedirs(full_path, exist_ok=True)
     return full_path
 
+
+def _ws_task_dir():
+    """当前工作区是任务目录（output/task_*）时返回其绝对路径，否则 None。
+
+    持久状态只对真正的任务目录记录；MCP 把工作区重置为项目根时不写状态。
+    """
+    ws = os.path.abspath(current_workspace.get())
+    return ws if os.path.basename(ws).startswith("task_") else None
+
+
+def _record_status(stage: str = None, **updates):
+    """把阶段/状态写入任务目录内的 task_status.json（P1 持久化；非任务目录时静默跳过）。"""
+    task_dir = _ws_task_dir()
+    if not task_dir:
+        return None
+    try:
+        if stage is not None:
+            updates.setdefault("stage", stage)
+        return state_write(task_dir, **updates)
+    except OSError:
+        return None  # 状态落盘失败不影响主流程
+
+
+# runner 子进程用的自包含状态更新代码（runner 不 import 项目模块，避免重复初始化 RAG）。
+# 2026-11-21 复核加固：①flock 跨进程互斥（与服务端 state_write 同语义，防丢更新）；
+# ②_finalize_status 带 PID 守卫——同任务目录若被新一轮提交接管（runner_pids.ddg
+#   变了），晚到的旧 runner 不得把状态改回 completed/failed，只留说明。
+_RUNNER_STATUS_SRC = '''import os, json, tempfile, datetime as _dt
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+
+def _load_state(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _dump_state(path, state, task_dir):
+    fd, tmp = tempfile.mkstemp(dir=task_dir, prefix=".ts_", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+def _update_status(task_dir, **updates):
+    path = os.path.join(task_dir, "task_status.json")
+    try:
+        lf = open(os.path.join(task_dir, ".task_status.lock"), "w")
+    except OSError:
+        lf = None
+    try:
+        if lf is not None and _fcntl is not None:
+            _fcntl.flock(lf, _fcntl.LOCK_EX)
+        state = _load_state(path)
+        state.setdefault("task_id", os.path.basename(task_dir))
+        state.setdefault("created_at", _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        state.update(updates)
+        state["updated_at"] = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _dump_state(path, state, task_dir)
+    except Exception:
+        pass  # 状态落盘失败不终止计算
+    finally:
+        if lf is not None:
+            lf.close()  # flock 随关闭释放；进程崩溃由内核释放，无残留锁
+
+def _finalize_status(task_dir, my_pid, **updates):
+    path = os.path.join(task_dir, "task_status.json")
+    try:
+        lf = open(os.path.join(task_dir, ".task_status.lock"), "w")
+    except OSError:
+        lf = None
+    try:
+        if lf is not None and _fcntl is not None:
+            _fcntl.flock(lf, _fcntl.LOCK_EX)
+        state = _load_state(path)
+        state.setdefault("created_at", _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        recorded = (state.get("runner_pids") or {}).get("ddg")
+        if recorded is not None and str(recorded) != str(my_pid):
+            state["stale_runner_note"] = (
+                f"旧 runner(pid={my_pid})晚到结束；任务已由 runner(pid={recorded})接管，状态保持不变")
+            state["updated_at"] = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            _dump_state(path, state, task_dir)
+            return
+        state.update(updates)
+        state["updated_at"] = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _dump_state(path, state, task_dir)
+    except Exception:
+        pass
+    finally:
+        if lf is not None:
+            lf.close()
+'''
+
 # ==========================================
 # 1. 基础读取与诊断工具
 # ==========================================
+def _pdb_has_atoms(path: str) -> bool:
+    """PDB 文件里是否真的有 ATOM/HETATM 原子行（空 selection 会写出仅含 END 的 4 字节文件）。"""
+    try:
+        with open(path, errors="ignore") as f:
+            return any(l.startswith(("ATOM", "HETATM")) for l in f)
+    except OSError:
+        return False
+
+
+def _mol2_has_atoms(path: str) -> bool:
+    """MOL2 文件的 @<TRIPOS>ATOM 段是否真有原子行。"""
+    try:
+        with open(path, errors="ignore") as f:
+            in_atom = False
+            for l in f:
+                if l.startswith("@<TRIPOS>ATOM"):
+                    in_atom = True
+                elif l.startswith("@<TRIPOS>"):
+                    in_atom = False
+                elif in_atom and l.strip():
+                    return True
+        return False
+    except OSError:
+        return False
+
+
+def _ws_has_real_ligand(ws: str) -> bool:
+    """工作区是否存在「真配体」文件（含原子坐标，而非空壳文件）。"""
+    cand = [os.path.join(ws, "ligand.pdb"), os.path.join(ws, "ligand.mol2")] + glob.glob(os.path.join(ws, "*.mol2"))
+    for p in cand:
+        if p.lower().endswith(".mol2"):
+            if _mol2_has_atoms(p):
+                return True
+        elif _pdb_has_atoms(p):
+            return True
+    return False
+
+
 @tool
 def read_file(file_path: str, max_lines: int = 50) -> str:
     """读取指定文件的内容。用于查看 .ddg 结果文件、目录列表等。"""
@@ -89,7 +237,9 @@ def check_logs(log_path: str, lines: int = 20) -> str:
     if not os.path.exists(log_path):
         return f"【日志排查失败】未找到文件 {log_path}。"
     try:
-        result = subprocess.run(f"tail -n {lines} {log_path}", shell=True, capture_output=True, text=True)
+        # 参数列表形式（不经 shell）：路径含空格/特殊字符也安全，且无注入面
+        result = subprocess.run(["tail", "-n", str(int(lines)), log_path],
+                                capture_output=True, text=True)
         if result.returncode == 0:
             return f"【日志截取成功】{log_path} 最后 {lines} 行：\n{result.stdout}"
         return f"【日志截取报错】{result.stderr}"
@@ -97,52 +247,43 @@ def check_logs(log_path: str, lines: int = 20) -> str:
         return f"【系统异常】{str(e)}"
 
 # ==========================================
-# 1.5 编号体系核心：唯一负责 PDB<->Rosetta 映射的实现
+# 1.5 编号体系核心：唯一负责 PDB<->Rosetta 映射的实现（实现收敛于 task_runtime）
 # ==========================================
-_AA_3TO1 = {
-    "ALA": "A", "CYS": "C", "ASP": "D", "GLU": "E", "PHE": "F", "GLY": "G",
-    "HIS": "H", "ILE": "I", "LYS": "K", "LEU": "L", "MET": "M", "ASN": "N",
-    "PRO": "P", "GLN": "Q", "ARG": "R", "SER": "S", "THR": "T", "VAL": "V",
-    "TRP": "W", "TYR": "Y",
-}
+# 残基身份四元组 = (链 ID, PDB 残基号, 插入码, 野生型氨基酸)。
+# 2026-11-20 修复：旧实现只数 CA、丢弃插入码、多链同号静默取第一链、无链输入退化匹配。
+# 新实现（task_runtime.build_numbering）：
+#   - 插入码（100A）独立于 100 参与映射；
+#   - 残基须具备完整主链 N/CA/C，缺失者按 Rosetta 实测行为剔除（不占 pose 编号）；
+#   - 备用构象/非标准残基/多模型的剔除规则与 run_cartesian_relax 清洗完全一致；
+#   - 无链纯编号在多链重号时标记歧义，解析时明确报错（见 task_runtime.resolve_targets）。
 
 def _build_rosetta_numbering(pdb_path: str):
-    """扫描 PDB 中所有 CA 原子，一次性构建双向编号映射（模块内唯一实现）。
+    """【兼容包装】保留旧三元组返回签名；内部委托 task_runtime.build_numbering。
 
     返回三元组：
-      rosetta_to_pdb : {Rosetta绝对行号(int): "链_PDB编号(str)"}
-      pdb_to_rosetta : {"链_PDB编号": 绝对行号, "PDB编号": 绝对行号}（兼容不带链的纯数字查询）
+      rosetta_to_pdb : {Rosetta绝对行号(int): "链_PDB编号[插入码](str)"}
+      pdb_to_rosetta : {"链_编号[icode]": 绝对行号, "编号[icode]": 绝对行号或 None(多链重号)}
       wt_aa_dict     : {Rosetta绝对行号(int): 单字母氨基酸(str)}
 
-    ⚠️ 本函数是整个流水线中【唯一】负责 PDB<->Rosetta 编号转换的实现。
-    调用方拿到结果后严禁再做二次映射，否则会导致突变位点双重偏移错位。
+    ⚠️ 新代码请直接用 task_runtime.build_numbering + resolve_targets；
+    本包装仅供既有调用方（rosetta_server 预检、run_fixbb_design）平滑迁移。
     """
-    rosetta_to_pdb = {}
-    pdb_to_rosetta = {}
-    wt_aa_dict = {}
-    rosetta_idx = 1
-    with open(pdb_path, 'r') as f:
-        for line in f:
-            if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                chain = line[21].strip()
-                pdb_res = line[22:26].strip()
-                strict_key = f"{chain}_{pdb_res}"
-                rosetta_to_pdb[rosetta_idx] = strict_key
-                pdb_to_rosetta[strict_key] = rosetta_idx
-                # 兼容不带链的纯数字查询（多链重复残基号时取第一个）
-                if pdb_res not in pdb_to_rosetta:
-                    pdb_to_rosetta[pdb_res] = rosetta_idx
-                wt_aa_dict[rosetta_idx] = _AA_3TO1.get(line[17:20].strip())
-                rosetta_idx += 1
-    return rosetta_to_pdb, pdb_to_rosetta, wt_aa_dict
+    nmap = _build_numbering_impl(pdb_path)
+    rosetta_to_pdb = dict(nmap.rosetta_to_pdb)
+    pdb_to_rosetta = dict(nmap.strict)
+    for numkey, idx in nmap.plain.items():
+        pdb_to_rosetta[numkey] = None if idx is task_runtime._AMBIGUOUS else idx
+    return rosetta_to_pdb, pdb_to_rosetta, dict(nmap.wt)
 
 
 
 @tool
-def get_rosetta_numbering(pdb_path: str, target_resnums: str, chain_id: str = "A") -> str:
+def get_rosetta_numbering(pdb_path: str, target_resnums: str, chain_id: str = "") -> str:
     """【只读核对工具】展示 PDB 晶体学编号 <-> Rosetta 绝对行号的映射关系（不修改任何文件）。
 
     用于批量突变前人工核对编号映射是否正确。
+    位点格式：A_76 / A_100A（链_编号[插入码]）或 76（唯一时可用，多链重号会报错）。
+    chain_id 留空 = 自动判定（单链任务无需填；多链同号必须显式给链）。
     注意：本工具输出的绝对行号仅供【查看核对】，切勿把它传给 run_saturation_mutagenesis！
     run_saturation_mutagenesis 接收的是【PDB 晶体学编号】（如 76,73），内部会自动完成转换。
     """
@@ -158,35 +299,36 @@ def get_rosetta_numbering(pdb_path: str, target_resnums: str, chain_id: str = "A
         return f"【执行报错】未找到 {pdb_path}。请确认文件路径。"
 
     try:
-        # 1. 兼容多位点解析
-        targets = [int(x.strip()) for x in str(target_resnums).split(",") if x.strip().isdigit()]
-        if not targets:
-            return "【执行报错】未提供有效的晶体学编号，请确保输入格式如 '76' 或 '76, 21'。"
+        # 1. 与突变执行共用同一 token 解析与映射（杜绝多套编号逻辑）
+        nmap = _build_numbering_impl(pdb_path)
+        tokens = _split_tokens(target_resnums)
+        # 指定了链时给无链 token 补上链前缀（保持旧调用方式兼容）
+        if chain_id:
+            tokens = [t if "_" in t else f"{chain_id}_{t}" for t in tokens]
+        if not tokens:
+            return "【执行报错】未提供有效的晶体学编号，请确保输入格式如 '76' 或 'A_76, B_100A'。"
+        targets, errors = _resolve_targets(tokens, nmap)
 
-        # 2. 复用唯一映射实现（杜绝与 run_saturation_mutagenesis 出现两套编号逻辑）
-        rosetta_to_pdb, pdb_to_rosetta, wt_aa_dict = _build_rosetta_numbering(pdb_path)
-
-        # 3. 结果汇总（只读核对，绝不引导 Agent 传递绝对行号）
         detail_str = []
-        matched_any = False
         for t in targets:
-            key = f"{chain_id}_{t}" if chain_id else str(t)
-            if key in pdb_to_rosetta:
-                r_idx = pdb_to_rosetta[key]
-                wt = wt_aa_dict.get(r_idx, "?")
-                detail_str.append(f"PDB {chain_id}_{t} ({wt}) -> Rosetta绝对行号 {r_idx}")
-                matched_any = True
-            else:
-                detail_str.append(f"PDB {chain_id}_{t} -> 【未找到】")
+            detail_str.append(f"PDB {t['chain']}_{t['numkey']} ({t['wt']}) -> Rosetta绝对行号 {t['idx']}")
+        for e in errors:
+            detail_str.append(f"PDB {e['token']} -> 【未匹配】{e['reason']}")
 
-        if not matched_any:
-            return f"【执行报错】未找到对应的 CA 原子。请检查链 ID ({chain_id}) 和晶体学编号是否正确。"
+        if not targets:
+            head = "【执行报错】没有任何位点匹配成功。" if errors else \
+                   "【执行报错】未找到对应的原子。请检查链 ID 和晶体学编号是否正确。"
+            chains_note = f"可用链: {'/'.join(nmap.chains) or '无'}；" if nmap.chains else ""
+            return head + chains_note + "\n".join(detail_str)
 
+        extra = f"（结构解析异常: {'；'.join(nmap.anomalies)}）" if nmap.anomalies else ""
         return (
-            "【映射核对】\n" + "\n".join(detail_str) +
+            "【映射核对】\n" + "\n".join(detail_str) + extra +
             "\n\n【编号体系铁律】run_saturation_mutagenesis 接收【PDB 晶体学编号】并自动完成转换。"
             "请把原始 PDB 编号（如 76,73）原样传给 run_saturation_mutagenesis，"
             "绝对不要把上面的绝对行号再传给它，否则会导致双重偏移错位！"
+            "\n【诚实边界】以上绝对行号是按清洗规则静态推断的 pose 编号；极端情况（零占用度等）"
+            "以实际 Rosetta 日志为准。"
         )
 
     except Exception as e:
@@ -194,13 +336,23 @@ def get_rosetta_numbering(pdb_path: str, target_resnums: str, chain_id: str = "A
 
 @tool
 def parameterize_ligand(ligand_path: str = "ligand.pdb") -> str:
-    """自动侦测 3 字母代号并生成参数。支持输入 PDB 自动调 PyMOL 加氢并转 MOL2。"""
+    """自动侦测 3 字母代号并生成参数。支持输入 PDB 自动调 PyMOL 加氢并转 MOL2。
+
+    纯蛋白任务（工作区无任何配体文件）时返回跳过提示而非报错，流水线可继续弛豫。
+    """
     if not os.path.isabs(ligand_path):
         ligand_path = os.path.join(current_workspace.get(), ligand_path)
-        
+
     if not os.path.exists(ligand_path):
+        # 纯蛋白分支：工作区里确实没有配体文件时，如实跳过（不标记为执行报错），
+        # 让三段流水线可以继续弛豫，而不是陷入修复循环
+        ws = current_workspace.get()
+        has_ligand = _ws_has_real_ligand(ws)
+        if not has_ligand:
+            return ("【纯蛋白任务】工作区未检测到配体文件，跳过参数化步骤。"
+                    "请直接调用 run_cartesian_relax 对蛋白结构进行弛豫。")
         return f"【执行报错】未找到 {ligand_path}"
-    
+
     out_dir = get_workspace_path("parameterize_ligand")
 
     # 1. 判断并执行 PDB 转 MOL2 (加氢)
@@ -210,10 +362,10 @@ def parameterize_ligand(ligand_path: str = "ligand.pdb") -> str:
         mol2_path = os.path.join(out_dir, mol2_filename)
         
         pymol_cmds = f"load {ligand_path}; h_add; save {mol2_path}"
-        cmd = f"{PYMOL_BIN} -c -d '{pymol_cmds}'"
-        
+
         try:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            subprocess.run([PYMOL_BIN, "-c", "-d", pymol_cmds],
+                           check=True, capture_output=True)
             if not os.path.exists(mol2_path):
                 return f"【执行报错】PyMOL 运行结束，但未生成 {mol2_path}"
         except Exception as e:
@@ -238,13 +390,14 @@ def parameterize_ligand(ligand_path: str = "ligand.pdb") -> str:
     except Exception:
         pass
 
-    # 3. 运行 Rosetta 参数化脚本
+    # 3. 运行 Rosetta 参数化脚本（参数列表 + cwd，不经 shell，路径含空格也安全）
     script_path = os.path.join(ROSETTA_SCRIPTS, "molfile_to_params.py")
     abs_mol2_path = os.path.abspath(mol2_path)
-    cmd = f"cd {out_dir} && python {script_path} -n {ligand_name} -p {ligand_name} --keep-names --clobber {abs_mol2_path}"
-    
+    cmd = ["python", script_path, "-n", ligand_name, "-p", ligand_name,
+           "--keep-names", "--clobber", abs_mol2_path]
+
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True)
         if result.returncode == 0:
             try:
                 for f in os.listdir(out_dir):
@@ -265,7 +418,7 @@ def run_cartesian_relax(protein_pdb: str = "protein.pdb", nstruct: int = 3) -> s
         
     out_dir = get_workspace_path("cartesian_relax")
     params_dir = get_workspace_path("parameterize_ligand")
-    
+
     # 增加 IO 延迟重试，解决找不到 params 的报错
     params_file = None
     for _ in range(5):
@@ -274,25 +427,37 @@ def run_cartesian_relax(protein_pdb: str = "protein.pdb", nstruct: int = 3) -> s
             params_file = os.path.abspath(params_files[0])
             break
         time.sleep(1)
-        
-    if not params_file:
-        return "【执行报错】连续 5 次探测未找到 .params 文件，请确认 tool2 是否正确执行。"
-        
-    ligand_name = os.path.basename(params_file).replace(".params", "")
-    ligand_pdb = os.path.join(params_dir, f"{ligand_name}_0001.pdb")
 
-    if not os.path.exists(ligand_pdb):
-        candidate = glob.glob(f"{params_dir}/{ligand_name}*.pdb")
-        if candidate: ligand_pdb = candidate[0]
-        else: return f"【执行报错】未找到对应的配体结构文件 {ligand_pdb}。"
+    ws = current_workspace.get()
+    has_ligand_file = _ws_has_real_ligand(ws)
+
+    if not params_file and has_ligand_file:
+        # 工作区有配体文件却探测不到 params：参数化确实失败，走修复分支
+        return "【执行报错】连续 5 次探测未找到 .params 文件，请确认 tool2 是否正确执行。"
+    if not params_file:
+        # 纯蛋白分支：无配体任务不拼接配体，relax 不带 -extra_res_fa
+        ligand_name = None
+        ligand_pdb = None
+    else:
+        ligand_name = os.path.basename(params_file).replace(".params", "")
+        ligand_pdb = os.path.join(params_dir, f"{ligand_name}_0001.pdb")
+
+        if not os.path.exists(ligand_pdb):
+            candidate = glob.glob(f"{params_dir}/{ligand_name}*.pdb")
+            if candidate: ligand_pdb = candidate[0]
+            else: return f"【执行报错】未找到对应的配体结构文件 {ligand_pdb}。"
 
     ready_pdb = os.path.join(out_dir, "complex_rosetta_ready.pdb")
     standard_aas = {"ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU", "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR"}
 
     try:
         with open(protein_pdb, 'r') as f_in, open(ready_pdb, 'w') as f_out:
+            seen_endmdl = False  # 多模型 PDB 只取第 1 个模型（与 task_runtime.build_numbering 一致）
             for line in f_in:
-                if line.startswith("ATOM"):
+                if line.startswith("ENDMDL"):
+                    seen_endmdl = True
+                    continue
+                if line.startswith("ATOM") and not seen_endmdl:
                     res_name = line[17:20].strip()
                     alt_loc = line[16]
                     if res_name not in standard_aas: continue
@@ -300,7 +465,7 @@ def run_cartesian_relax(protein_pdb: str = "protein.pdb", nstruct: int = 3) -> s
                     if alt_loc != ' ': line = line[:16] + ' ' + line[17:]
                     f_out.write(line)
             f_out.write("TER\n")
-            if os.path.exists(ligand_pdb):
+            if ligand_pdb and os.path.exists(ligand_pdb):
                 with open(ligand_pdb, 'r') as f_lig:
                     for line in f_lig:
                         if line.startswith("HETATM") or line.startswith("ATOM"): f_out.write(line)
@@ -309,47 +474,84 @@ def run_cartesian_relax(protein_pdb: str = "protein.pdb", nstruct: int = 3) -> s
 
     rosetta_relax_bin = os.path.join(ROSETTA_BIN, "relax.linuxgccrelease")
     abs_ready_pdb = os.path.abspath(ready_pdb)
-    
-    runner_py = f"""import os
-import time
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
+    mode_note = "" if params_file else "（纯蛋白模式：未检测到配体，未拼接配体、未加载 extra_res）"
+
+    # Rosetta 参数与旧实现逐字一致（含顺序）；仅把"shell 字符串"改为参数列表执行，
+    # 路径含空格/特殊字符时不再断裂。%I% 是每路弛豫的序号占位符。
+    relax_argv = [rosetta_relax_bin, "-s", abs_ready_pdb]
+    if params_file:
+        relax_argv += ["-extra_res_fa", params_file]
+    relax_argv += [
+        "-relax:cartesian", "-score:weights", "ref2015_cart",
+        "-relax:min_type", "lbfgs_armijo_nonmonotone",
+        "-relax:constrain_relax_to_start_coords", "-relax:coord_constrain_sidechains",
+        "-use_input_sc", "-ignore_unrecognized_res", "-ignore_zero_occupancy",
+        "-missing_density_to_jump", "-nstruct", "1",
+        "-out:prefix", "cart_relax_%I%_", "-out:file:scorefile", "score_%I%.sc",
+    ]
+    task_dir_abs = os.path.dirname(os.path.abspath(out_dir))
+
+    runner_py = (
+        "import os, json, subprocess\n"
+        "from concurrent.futures import ThreadPoolExecutor\n\n"
+        f"task_dir = {task_dir_abs!r}\n"
+        f"relax_argv = {relax_argv!r}\n"
+        f"nstruct = {int(nstruct)}\n\n"
+        + _RUNNER_STATUS_SRC + """
 
 def execute(i):
-    cmd = (
-        f"{rosetta_relax_bin} -s {abs_ready_pdb} -extra_res_fa {params_file} "
-        f"-relax:cartesian -score:weights ref2015_cart -relax:min_type lbfgs_armijo_nonmonotone "
-        f"-relax:constrain_relax_to_start_coords -relax:coord_constrain_sidechains -use_input_sc "
-        f"-ignore_unrecognized_res -ignore_zero_occupancy -missing_density_to_jump "
-        f"-nstruct 1 -out:prefix cart_relax_{{i}}_ -out:file:scorefile score_{{i}}.sc > relax_run_{{i}}.log 2>&1"
-    )
-    subprocess.run("unset DISPLAY && " + cmd, shell=True)
+    argv = [a.replace("%I%", str(i)) for a in relax_argv]
+    # 参数列表执行（无 shell，路径含空格安全）；退出码追加进日志便于诊断
+    with open(f"relax_run_{i}.log", "w") as lf:
+        rc = subprocess.run(argv, stdout=lf, stderr=subprocess.STDOUT).returncode
+    with open(f"relax_run_{i}.log", "a") as lf:
+        lf.write(f"\\n[exit code {rc}]\\n")
+    return rc
 
 print(f" 开始多核并发弛豫 (共 {nstruct} 个构象)...")
-with ThreadPoolExecutor(max_workers={nstruct}) as pool:
-    for i in range(1, {nstruct} + 1):
-        pool.submit(execute, i)
+rcs = []
+with ThreadPoolExecutor(max_workers=nstruct) as pool:
+    for rc in pool.map(execute, range(1, nstruct + 1)):
+        rcs.append(rc)
+print(" 各路退出码:", rcs)
 
 print(" 合并打分文件...")
 with open("score.sc", "w") as fout:
     fout.write("SEQUENCE:\\nSCORE: total_score description\\n")
-    for i in range(1, {nstruct} + 1):
+    for i in range(1, nstruct + 1):
         try:
-            with open(f"score_{{i}}.sc", "r") as fin:
+            with open(f"score_{i}.sc", "r") as fin:
                 for line in fin:
                     if line.startswith("SCORE:") and "description" not in line:
                         fout.write(line)
         except Exception:
             pass
+_update_status(task_dir, relax_finished=True,
+               relax_exit_codes=rcs,
+               status_note="弛豫完成" if os.path.exists("score.sc") else "弛豫结束但未生成 score.sc")
 print(" 弛豫全流程结束！")
 """
+    )
     with open(os.path.join(out_dir, "run_relax_parallel.py"), "w") as f:
         f.write(runner_py)
 
+    # 后台启动：参数列表 + cwd + start_new_session（替代 nohup+cd 的 shell 串，
+    # 任务目录名含空格时也能正确工作；start_new_session 使子进程脱离本进程组，
+    # 服务进程收到 Ctrl-C/终止信号时不会被连带杀死，语义等同 nohup）
     try:
-        subprocess.Popen(f"cd {out_dir} && nohup python -u run_relax_parallel.py > master_relax.log 2>&1 &", shell=True)
-        return f"【计算已挂起】已调动后台多核并发执行 {nstruct} 个弛豫任务。"
+        with open(os.path.join(out_dir, "master_relax.log"), "w") as log_f:
+            proc = subprocess.Popen([sys.executable, "-u", "run_relax_parallel.py"],
+                                    cwd=out_dir, stdout=log_f, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        # P1 状态：记录弛豫 runner 进程号，供重启后判定计算是否仍在运行
+        _record_status(stage="relax", status="running",
+                       runner_pids={"relax": proc.pid, "ddg": None},
+                       params={"nstruct": int(nstruct),
+                               "weights": "ref2015_cart", "min_type": "lbfgs_armijo_nonmonotone"})
+        return f"【计算已挂起】已调动后台多核并发执行 {nstruct} 个弛豫任务。{mode_note}"
     except Exception as e:
+        _record_status(stage="relax", status="failed",
+                       error_type=type(e).__name__, error_detail=str(e))
         return f"【系统异常】{str(e)}"
 
 @tool
@@ -367,82 +569,90 @@ def run_saturation_mutagenesis(target_resnum: str, jobs: int = 10, delay: float 
             params_file = os.path.abspath(params_files[0])
             break
         time.sleep(1)
-        
-    if not params_file:
+
+    ws = current_workspace.get()
+    has_ligand_file = _ws_has_real_ligand(ws)
+    if not params_file and has_ligand_file:
         return "【执行报错】探测未找到 .params 文件，请确认 tool2 是否正确执行。"
+    # 纯蛋白分支：无配体任务 ddg 命令不带 -extra_res_fa
+    mode_note = "" if params_file else "（纯蛋白模式）"
     
     ready_pdb_path = os.path.join(relax_dir, "complex_rosetta_ready.pdb")
     if not os.path.exists(ready_pdb_path):
         return "【执行报错】未找到初始拼装结构 complex_rosetta_ready.pdb，tool3可能未正确执行。"
 
-    # 接收大模型传来的【PDB 晶体学编号】（如 76,73），增加超级健壮的去重和字符清理
-    import re
-    raw_str = str(target_resnum).replace("'", "").replace('"', "").replace("[", "").replace("]", "")
-    pdb_targets = [x.strip() for x in raw_str.split(",") if x.strip()]
+    # 位点输入：与提交预检 / get_rosetta_numbering 共用同一解析实现（P0 收敛）。
+    # 行为变化（相对旧版，见 CHANGES-rosetta.md）：
+    #   - 移除"提取数字退化匹配"：错误链名（如 B76）、带插入码的 100A、多链同号无链输入
+    #     旧版会静默映射到第一条链的该编号——现一律明确报错；
+    #   - 插入码按 (编号+插入码) 精确匹配；插入码位点在弛豫清洗结构中真实存在。
+    tokens = _split_tokens(target_resnum)
+    if not tokens:
+        return ("【执行报错】未解析到任何突变位点。格式如 '76'、'A_76'、'A_100A'；"
+                "多位点用逗号分隔。")
+    nmap = _build_numbering_impl(ready_pdb_path)
+    resolved, errors = _resolve_targets(tokens, nmap)
+    if errors:
+        detail = "; ".join(f"{e['token']}({e['reason']})" for e in errors)
+        return (f"【执行报错】位点解析失败: {detail}。"
+                f"清洗后结构含 {nmap.size} 个标准残基，链: {'/'.join(nmap.chains) or '无'}。"
+                "可先调用 get_rosetta_numbering 核对；多链同号必须带链 ID（如 A_76）。")
+    anom_note = f"（结构解析异常: {'；'.join(nmap.anomalies)}）" if nmap.anomalies else ""
 
     all_aas = ["A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"]
 
-    # 1. 唯一一次 PDB -> Rosetta 绝对行号映射（复用共享实现，杜绝双重映射）
-    rosetta_to_pdb, pdb_to_rosetta, wt_aa_dict = _build_rosetta_numbering(ready_pdb_path)
-
-    # 2. 把【PDB 编号】映射为 Rosetta 绝对行号（含正则退化匹配）
-    targets = []
-    for p in pdb_targets:
-        if p in pdb_to_rosetta:
-            targets.append(pdb_to_rosetta[p])
-        else:
-            # 暴力提取纯数字进行退化匹配，无视大模型可能附加的乱码
-            num_match = re.search(r'\d+', p)
-            if num_match and num_match.group() in pdb_to_rosetta:
-                targets.append(pdb_to_rosetta[num_match.group()])
-            else:
-                return f"【执行报错】无法在清洗后的结构中找到目标 PDB 晶体学编号 {p}，请检查该位点是否被剔除（或发生了文件并发读取冲突）。"
-
+    # 唯一一次 PDB -> Rosetta 绝对行号映射：编号映射基准 = complex_rosetta_ready.pdb
+    # （与实际 cartesian_ddg 输入 wt_relaxed.pdb 同源——后者由前者弛豫产生，Rosetta 保持编号）
     tasks_file = os.path.join(mut_dir, "rosetta_tasks.txt")
     rosetta_ddg_bin = os.path.join(ROSETTA_BIN, "cartesian_ddg.linuxgccrelease")
     abs_wt_relaxed = os.path.abspath(os.path.join(relax_dir, "wt_relaxed.pdb"))
-    
+
+    # 任务行改为 JSON（argv 参数列表 + 日志名）：runner 不再经 shell 拼接，
+    # 路径含空格/特殊字符安全，退出码可记录。科学旗标与旧 shell 串逐字一致。
+    n_planned = 0
     with open(tasks_file, 'w') as f_tasks:
-        for t_res in targets:
-            wt_aa = wt_aa_dict.get(t_res)
-            pdb_num = rosetta_to_pdb.get(t_res)
-            if not wt_aa or not pdb_num: 
-                f_tasks.write(f"# ERROR: 无法在清洗后的结构中找到目标绝对行号 {t_res}\n")
-                continue 
-            
+        for t in resolved:
+            t_res, pdb_num, wt_aa = t["idx"], f"{t['chain']}_{t['numkey']}", t["wt"]
             f_tasks.write(f"# [编号映射] PDB {pdb_num} -> Rosetta绝对行号 {t_res} ({wt_aa})（审计）\n")
-            mut_aas = [aa for aa in all_aas if aa != wt_aa]
-            for mut_aa in mut_aas:
-                mutfile_name = f"mut_{wt_aa}_{pdb_num}_{mut_aa}.txt" 
+            for mut_aa in (aa for aa in all_aas if aa != wt_aa):
+                mutfile_name = f"mut_{wt_aa}_{pdb_num}_{mut_aa}.txt"
 
                 with open(os.path.join(mut_dir, mutfile_name), 'w') as f_mut:
                     f_mut.write("total 1\n1\n")
                     f_mut.write(f"{wt_aa} {t_res} {mut_aa}\n")
-                
-                cmd = (
-                    f"{rosetta_ddg_bin} "
-                    f"-s {abs_wt_relaxed} -ddg:mut_file {mutfile_name} -extra_res_fa {params_file} "
-                    f"-ddg:iterations 3 -ddg:cartesian -ddg:dump_pdbs false -ddg:bbnbrs 1 "
-                    f"-score:weights ref2015_cart -relax:min_type lbfgs_armijo_nonmonotone "
-                    f"-relax:cartesian -mute all -out:prefix ddg_{wt_aa}_{pdb_num}_{mut_aa}_"
-                )
-                f_tasks.write(f"{cmd} > mut_{wt_aa}_{pdb_num}_{mut_aa}.log 2>&1\n")
+
+                argv = [rosetta_ddg_bin, "-s", abs_wt_relaxed, "-ddg:mut_file", mutfile_name]
+                if params_file:
+                    argv += ["-extra_res_fa", params_file]
+                argv += [
+                    "-ddg:iterations", "3", "-ddg:cartesian", "-ddg:bbnbrs", "1",
+                    "-score:weights", "ref2015_cart", "-relax:min_type", "lbfgs_armijo_nonmonotone",
+                    "-relax:cartesian", "-mute", "all",
+                    "-out:prefix", f"ddg_{wt_aa}_{pdb_num}_{mut_aa}_",
+                ]
+                f_tasks.write(json.dumps({"argv": argv, "log": f"mut_{wt_aa}_{pdb_num}_{mut_aa}.log"},
+                                         ensure_ascii=False) + "\n")
+                n_planned += 1
 
     abs_sum_file = os.path.abspath(os.path.join(sum_dir, "ddg_results.txt"))
     cleaner_py = f"""import os
+import re
 import glob
 results = []
 for f in glob.glob("*.ddg"):
     try:
         parts = f.replace('.ddg', '').split('_')
         # 因为加入了链 ID，被下划线切割后的块数变多了，从 4 改为 5
-        if len(parts) < 5: continue 
-        
+        if len(parts) < 5: continue
+
+        # 位号块兼容插入码（100A）与多字符链：只取前导数字作排序键，名字保留完整 numkey
+        m_num = re.match(r"(\\d+)", parts[3])
+        if not m_num: continue
+        pdb_num = int(m_num.group(1))
         chain_id = parts[2]
-        pdb_num = int(parts[3])
-        # 拼接成类似 D_A73_A 的漂亮格式
-        mut_name = f"{{parts[1]}}_{{chain_id}}{{parts[3]}}_{{parts[4]}}" 
-        
+        # 拼接成类似 A_A76_A / A_A100A_A 的格式
+        mut_name = f"{{parts[1]}}_{{chain_id}}{{parts[3]}}_{{parts[4]}}"
+
         wt_scores, mut_scores = [], []
         with open(f, 'r') as fp:
             for line in fp:
@@ -462,22 +672,28 @@ for f in glob.glob("*.ddg"):
 # 多级排序：先按链ID排，再按氨基酸行号排，最后按 ddG 值排
 results.sort(key=lambda x: (x[0], x[1], x[3]))
 with open("{abs_sum_file}", "w") as out:
-    out.write("突变\\t平均ΔΔG(REU)\\n")
+    # 口径如实：ddg = min(突变体三次迭代) - min(WT 三次迭代)，不是平均值
+    out.write("突变\\tΔΔG(REU, min(MUT)-min(WT))\\n")
     for chain_id, pdb_num, mut_name, ddg in results:
         out.write(f"{{mut_name}}\\t{{ddg:.4f}}\\n")
 """
     with open(os.path.join(mut_dir, "auto_clean.py"), "w") as f: f.write(cleaner_py)
 
     abs_relax_dir = os.path.abspath(relax_dir)
-    runner_py = f"""import time
-import subprocess
-import os
-import glob
-import shutil
-from concurrent.futures import ThreadPoolExecutor
-
-relax_dir = "{abs_relax_dir}"
-score_path = os.path.join(relax_dir, "score.sc")
+    task_dir_abs = os.path.dirname(os.path.abspath(mut_dir))
+    runner_py = (
+        "import time\n"
+        "import json\n"
+        "import sys\n"
+        "import subprocess\n"
+        "import os\n"
+        "import glob\n"
+        "import shutil\n"
+        "from concurrent.futures import ThreadPoolExecutor\n\n"
+        f"relax_dir = {abs_relax_dir!r}\n"
+        f"task_dir = {task_dir_abs!r}\n\n"
+        + _RUNNER_STATUS_SRC + '\n'
+        + f'''score_path = os.path.join(relax_dir, "score.sc")
 wt_pdb_path = os.path.join(relax_dir, "wt_relaxed.pdb")
 
 print(" 正在后台默默等待 tool3 弛豫彻底完成 (等待合并打分文件 score.sc)...")
@@ -516,25 +732,93 @@ if not os.path.exists(wt_pdb_path):
     if pdbs: shutil.copy(pdbs[-1], wt_pdb_path)
     else:
         print(" 严重错误：弛豫未成功生成结构，突变任务终止！")
+        _finalize_status(task_dir, os.getpid(), status="failed", stage="mutagenesis",
+                         error_type="NoRelaxStructure",
+                         error_detail="弛豫未生成任何结构，突变计算未执行")
         exit(1)
 
 with open("rosetta_tasks.txt", "r") as f:
-    tasks = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
+    tasks = []
+    for line in f:
+        line = line.strip()
+        if line and not line.startswith('#'):
+            tasks.append(json.loads(line))  # {{"argv": [...], "log": "..."}}
 
-print(f" 开始 Python 内置错峰并发计算 (并发:{jobs}, 延迟:{delay}s)...")
-def execute(cmd): subprocess.run("unset DISPLAY && " + cmd, shell=True)
+print(f" 开始 Python 内置错峰并发计算 (并发:{int(jobs)}, 延迟:{float(delay)}s)...")
+def execute(rec):
+    # 参数列表执行（无 shell，任务路径含空格安全）；退出码追加进日志。
+    # OSError（如 Rosetta 可执行文件缺失）不再炸线程池——记 -999 并入日志，
+    # 让收尾按"0 个成功突变"如实判 failed，而不是静默无产物。
+    rc = -999
+    try:
+        with open(rec["log"], "w") as lf:
+            rc = subprocess.run(rec["argv"], stdout=lf, stderr=subprocess.STDOUT).returncode
+    except OSError as _e:
+        with open(rec["log"], "w") as lf:
+            lf.write(f"[启动失败] {{_e}}\\n")
+        rc = -999
+    with open(rec["log"], "a") as lf:
+        lf.write(f"\\n[exit code {{rc}}]\\n")
+    return rc
 
-with ThreadPoolExecutor(max_workers={jobs}) as pool:
-    for task in tasks:
-        pool.submit(execute, task)
-        time.sleep({delay})
+with ThreadPoolExecutor(max_workers={int(jobs)}) as pool:
+    for rec in tasks:
+        pool.submit(execute, rec)
+        time.sleep({float(delay)})
 
-subprocess.run("python auto_clean.py", shell=True)
-"""
+subprocess.run([sys.executable, "auto_clean.py"])
+
+summary_path = os.path.join(task_dir, "summary", "ddg_results.txt")
+n_ddg = len(glob.glob("*.ddg"))
+if n_ddg > 0:
+    _finalize_status(task_dir, os.getpid(), status="completed", stage="mutagenesis",
+                     status_note=f"突变计算完成（{{n_ddg}} 个 .ddg）",
+                     artifacts={{"ddg_results": "summary/ddg_results.txt",
+                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}})
+else:
+    _finalize_status(task_dir, os.getpid(), status="failed", stage="mutagenesis",
+                     error_type="NoSuccessfulMutants",
+                     error_detail=f"0 个成功突变（{{'ddg_results.txt 在位' if os.path.exists(summary_path) else '无汇总'}}）；逐个查看 mut_*.log 末尾的 [exit code]")
+print(" 突变全流程结束！")
+''')
     with open(os.path.join(mut_dir, "run_ddg.py"), "w") as f: f.write(runner_py)
-    
-    subprocess.Popen(f"cd {mut_dir} && nohup python -u run_ddg.py > run_launcher.log 2>&1 &", shell=True)
-    return f"【流水线通关】所有 {len(targets)} 个位点的突变任务已挂载！"
+
+    # 后台启动方式与 run_cartesian_relax 相同（参数列表 + cwd + start_new_session）
+    try:
+        with open(os.path.join(mut_dir, "run_launcher.log"), "w") as log_f:
+            proc = subprocess.Popen([sys.executable, "-u", "run_ddg.py"],
+                                    cwd=mut_dir, stdout=log_f, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        # P1 状态：记录 ddg runner 进程号（保留 relax 记录）+ 轻量 manifest（P2）
+        task_dir = _ws_task_dir()
+        if task_dir:
+            prev = task_runtime.state_read(task_dir)
+            pids = dict(prev.get("runner_pids") or {})
+            pids["ddg"] = proc.pid
+            _record_status(stage="mutagenesis", status="running", runner_pids=pids)
+            set_manifest(
+                task_dir,
+                input_structure="protein.pdb",
+                numbering_basis="cartesian_relax/complex_rosetta_ready.pdb（清洗后结构；规则见 task_runtime.build_numbering）",
+                chains=nmap.chains,
+                n_residues=nmap.size,
+                target_sites=[f"{t['chain']}_{t['numkey']}(WT={t['wt']})" for t in resolved],
+                mutations_planned=n_planned,
+                ddg_program=os.path.basename(rosetta_ddg_bin),
+                ddg_params={"iterations": 3, "cartesian": True, "bbnbrs": 1,
+                            "weights": "ref2015_cart",
+                            "min_type": "lbfgs_armijo_nonmonotone",
+                            "extra_res_fa": bool(params_file)},
+                rosetta_version=None,  # 静态无法获得（需运行时日志确认），留空不虚构
+                gromacs_ready=False,   # 结构未经 MD 准备，不可直接作为 GROMACS 输入
+                numbering_audit="rosetta_tasks.txt 中 # [编号映射] 注释行",
+            )
+    except Exception as e:
+        _record_status(stage="mutagenesis", status="failed",
+                       error_type=type(e).__name__, error_detail=str(e))
+        return f"【系统异常】突变任务提交失败: {str(e)}"
+    return (f"【流水线通关】所有 {len(resolved)} 个位点的突变任务已挂载！{mode_note}"
+            + (anom_note if anom_note else ""))
 
 # ==========================================
 # 3. 诊断与修复工具
@@ -1415,12 +1699,11 @@ def init_vector_db():
         # 让 Embeddings 使用 .env 里配置好的 API Key 和代理 URL；
         # 中转站不支持 embedding 或需指定模型时，可在 .env 设 EMBEDDING_MODEL
         embeddings_kwargs = dict(
-            api_key=os.getenv("LLM_API_KEY", ""),
-            base_url=os.getenv("LLM_BASE_URL", ""),
+            api_key=os.getenv("EMBED_API_KEY", os.getenv("LLM_API_KEY", "")),
+            base_url=os.getenv("EMBED_BASE_URL", os.getenv("LLM_BASE_URL", "")),
+            model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+            chunk_size=16,
         )
-        emb_model = os.getenv("EMBEDDING_MODEL", "").strip()
-        if emb_model:
-            embeddings_kwargs["model"] = emb_model
         embeddings = OpenAIEmbeddings(**embeddings_kwargs)
 
         if os.path.exists("chroma_db"):
@@ -1470,3 +1753,320 @@ def search_rosetta_docs(query: str) -> str:
         return "【检索结果】Rosetta 知识库中未找到相关内容（请检查 rosetta_manuals 语料）。"
     context = "\n---\n".join(d.page_content[:1500] for d in docs)
     return f"【检索成功·{source}】以下是 Rosetta 知识库的参考资料：\n{context}"
+
+
+# ==========================================
+# 5. 扩展分析与设计工具（v0.2 新工具包：score / SASA / 界面分析 / fixbb 设计）
+# 旗标均已于 2026-11-14 用真实任务数据在本机冒烟验证（wt_relaxed.pdb + XYL.params）：
+#   - score.linuxgccrelease -s pdb [-extra_res_fa x] -out:file:scorefile x.sc
+#   - InterfaceAnalyzer.linuxgccrelease -s pdb [-extra_res_fa x] -pack_separated -packstat -out:file:scorefile x.sc
+#     ⚠️ 本构建默认即计算 dG_separated/dG_cross 等列；命令行传 -dg_separated/-dG_cross
+#        （无论大小写）都会 "option not found" 崩溃——文档中的列名≠旗标名，勿照抄。
+#   - calculate_sasa.linuxgccrelease -s pdb [-extra_res_fa x]（总 SASA 输出在 stdout）
+#   - fixbb.linuxgccrelease -s pdb -resfile rf.txt -nstruct N -ex1 -ex2 [-extra_res_fa x]
+# ==========================================
+
+def _resolve_structure_input(pdb_path: str = ""):
+    """扩展工具通用默认结构选择：弛豫择优 → 清洗复合物 → 原始上传。返回 (绝对路径, 错误消息)。"""
+    if pdb_path and pdb_path.strip():
+        p = pdb_path if os.path.isabs(pdb_path) else os.path.join(current_workspace.get(), pdb_path)
+        if not os.path.exists(p):
+            return None, f"【执行报错】文件不存在: {p}"
+        return os.path.abspath(p), None
+    for cand in (
+        os.path.join(current_workspace.get(), "cartesian_relax", "wt_relaxed.pdb"),
+        os.path.join(current_workspace.get(), "cartesian_relax", "complex_rosetta_ready.pdb"),
+        os.path.join(current_workspace.get(), "protein.pdb"),
+    ):
+        if os.path.exists(cand):
+            return os.path.abspath(cand), None
+    return None, "【执行报错】未找到可用结构。请指定 pdb_path，或先完成弛豫（cartesian_relax/wt_relaxed.pdb）。"
+
+
+def _params_extra_args():
+    """工作区存在配体参数时返回 ['-extra_res_fa', 路径]，否则空列表。"""
+    params_files = glob.glob(os.path.join(current_workspace.get(), "parameterize_ligand", "*.params"))
+    if params_files:
+        return ["-extra_res_fa", os.path.abspath(params_files[0])]
+    return []
+
+
+def _read_rosetta_score_file(path: str) -> dict:
+    """读 Rosetta score 文件第一行数据行 → {列名: 值}。列值保留字符串，调用方自行转 float。
+
+    兼容两种表头：新应用用 total_score（fixbb/InterfaceAnalyzer），旧 score 应用用 score。
+    """
+    header = None
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.startswith("SCORE:"):
+                    continue
+                parts = line.split()[1:]
+                if header is None:
+                    if "total_score" in parts or "score" in parts:
+                        header = parts
+                    continue
+                row = dict(zip(header, parts))
+                row.pop("description", None)
+                if "total_score" not in row and "score" in row:
+                    row["total_score"] = row["score"]
+                return row
+    except Exception:
+        pass
+    return {}
+
+
+def _fmt_row(row: dict, columns, labels) -> str:
+    lines = []
+    for col, label in zip(columns, labels):
+        if col in row:
+            lines.append(f"  {label}({col}) = {row[col]}")
+    return "\n".join(lines)
+
+
+@tool
+def score_structure(pdb_path: str = "") -> str:
+    """用 Rosetta ref2015 全原子打分函数对结构打分（REU），返回 total_score 与主要能量项。轻量同步计算。
+
+    默认结构顺序：cartesian_relax/wt_relaxed.pdb → complex_rosetta_ready.pdb → protein.pdb；也可指定 pdb_path。
+
+    口径说明：REU 是 Rosetta 能量单位，仅可用于比较不同结构/协议的相对合理性，
+    不等于结合自由能，也不是实验测量值（计算筛选 ≠ 实验验证）。
+    """
+    pdb, err = _resolve_structure_input(pdb_path)
+    if err:
+        return err
+    out_dir = get_workspace_path("analysis")
+    # 旗标只传文件名：Rosetta 的 cwd 已是 out_dir，传相对工作区的路径会拼出不存在目录而崩溃
+    sc_path = os.path.join(out_dir, "score_out.sc")
+    cmd = [os.path.join(ROSETTA_BIN, "score.linuxgccrelease"),
+           "-s", pdb, "-out:file:scorefile", "score_out.sc", "-mute", "all"] + _params_extra_args()
+    try:
+        proc = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return "【执行报错】打分超时（>30 分钟）。大复合物建议先弛豫再打分。"
+    row = _read_rosetta_score_file(sc_path) if os.path.exists(sc_path) else {}
+    if not row:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-5:])
+        return f"【执行报错】打分未产出 score 文件。{tail}"
+    detail = _fmt_row(row,
+                      ["total_score", "fa_atr", "fa_rep", "fa_sol", "fa_elec", "lk_ball_wtd", "dslf_fa13"],
+                      ["总得分", "范德华吸引", "范德华排斥", "溶剂化", "静电", "溶剂化极性", "二硫键"])
+    return (f"【打分完成】{os.path.basename(pdb)}（ref2015）\n{detail}\n"
+            "单位: REU（Rosetta 能量单位），仅代表相对物理合理性，不等于实验值。")
+
+
+@tool
+def calculate_sasa(pdb_path: str = "") -> str:
+    """计算结构总溶剂可及面积 SASA（Å²，LeGrand 精确算法，默认 1.4 Å 探针半径）。轻量同步计算。"""
+    pdb, err = _resolve_structure_input(pdb_path)
+    if err:
+        return err
+    out_dir = get_workspace_path("analysis")
+    cmd = [os.path.join(ROSETTA_BIN, "calculate_sasa.linuxgccrelease"),
+           "-s", pdb, "-mute", "all"] + _params_extra_args()
+    try:
+        proc = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True, timeout=1200)
+    except subprocess.TimeoutExpired:
+        return "【执行报错】SASA 计算超时。"
+    m = re.search(r"Solvent Accessible Surface Area is:\s*([0-9.]+)", proc.stdout or "")
+    if not m:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-5:])
+        return f"【执行报错】未读到 SASA 结果。{tail}"
+    total = float(m.group(1))
+    n_res = len(glob.glob(os.path.join(current_workspace.get(), "saturation_mutagenesis", "*.ddg")))
+    note = f"（该任务已有 {n_res} 个突变 ddG 数据）" if n_res else ""
+    return (f"【SASA 计算完成】{os.path.basename(pdb)}\n  总溶剂可及面积 = {total:.1f} Å² {note}\n"
+            "如需界面 SASA（dSASA_int），请对多链复合物调用 analyze_interface。")
+
+
+@tool
+def analyze_interface(pdb_path: str = "") -> str:
+    """蛋白-蛋白多链复合物界面分析（InterfaceAnalyzer，ref2015）：
+    dG_separated / dG_cross / dSASA_int / packstat / sc_value / complex_normalized。
+
+    口径与边界（如实声明）：
+      - 仅对至少 2 条蛋白链的复合物有意义，单链蛋白会如实返回不适用；
+      - dG_separated/dG_cross 是 Rosetta 界面能量估计（REU），不是实验结合自由能；
+      - 本构建的界面指标默认全算，packstat 为界面堆积质量的经验分（0-1）。
+    """
+    pdb, err = _resolve_structure_input(pdb_path)
+    if err:
+        return err
+    chains = set()
+    with open(pdb, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                chains.add(line[21].strip())
+    if len(chains) < 2:
+        return (f"【不适用】{os.path.basename(pdb)} 仅含 {len(chains)} 条蛋白链"
+                f"（{','.join(sorted(chains)) if chains else '无'}）。"
+                "InterfaceAnalyzer 需要蛋白-蛋白多链复合物；单链蛋白请用 score_structure / calculate_sasa。")
+    out_dir = get_workspace_path("analysis")
+    sc_path = os.path.join(out_dir, "interface_out.sc")
+    cmd = [os.path.join(ROSETTA_BIN, "InterfaceAnalyzer.linuxgccrelease"),
+           "-s", pdb, "-pack_separated", "-packstat",
+           "-out:file:scorefile", "interface_out.sc", "-mute", "all"] + _params_extra_args()
+    try:
+        proc = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return "【执行报错】界面分析超时（>30 分钟）。"
+    row = _read_rosetta_score_file(sc_path) if os.path.exists(sc_path) else {}
+    if not row:
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-5:])
+        return f"【执行报错】界面分析未产出 score 文件。{tail}"
+    detail = _fmt_row(row,
+                      ["dG_separated", "dG_cross", "complex_normalized", "dSASA_int",
+                       "dSASA_hphobic", "dSASA_polar", "nres_int", "packstat", "sc_value"],
+                      ["分离链界面能 dG_sep", "交叉界面能 dG_cross", "归一化复合物能",
+                       "界面 SASA", "界面疏水 SASA", "界面极性 SASA", "界面残基数",
+                       "堆积质量 packstat", "形状互补 sc"])
+    return (f"【界面分析完成】{os.path.basename(pdb)}（蛋白链: {','.join(sorted(chains))}）\n{detail}\n"
+            "口径: dG_separated/dG_cross 为 Rosetta 界面能量估计（REU），非实验结合自由能；"
+            "可与 SKEMPI 同位点结合 ΔΔG 做探索性对照，不构成可信度结论。")
+
+
+@tool
+def run_fixbb_design(positions: str, nstruct: int = 5) -> str:
+    """固定骨架多点设计（fixbb）：指定若干位点放开为全部 20 种氨基酸，packer 给出最优侧链组合。
+
+    使用前提：工作区已有弛豫产物（cartesian_relax/wt_relaxed.pdb 或 complex_rosetta_ready.pdb）。
+    positions: 位点列表，如 "A_21,A_23"（链_PDB编号）；纯数字默认取结构第一条蛋白链。
+    nstruct: 设计克隆数（不同随机种子），默认 5。
+
+    后台执行（分钟级），完成后在 <工作区>/fixbb_design/design_summary.txt 生成汇总：
+    各克隆 total_score、最优克隆、逐位点氨基酸变化。可用 read_file 查看。
+    口径与限制（fixbb 官方文档三条 limitation）：固定骨架不能保证新序列真实折叠；
+    随机性导致各克隆结果不同；打分函数不完美——设计结果是计算候选，需实验验证。
+    """
+    import re as _re
+    relax_dir = os.path.join(current_workspace.get(), "cartesian_relax")
+    wt_pdb = os.path.join(relax_dir, "wt_relaxed.pdb")
+    ready_pdb = os.path.join(relax_dir, "complex_rosetta_ready.pdb")
+    if os.path.exists(wt_pdb):
+        pdb = wt_pdb
+    elif os.path.exists(ready_pdb):
+        pdb = ready_pdb
+    else:
+        return ("【执行报错】未找到弛豫产物（cartesian_relax/wt_relaxed.pdb）。"
+                "固定骨架设计应在弛豫后的结构上进行，请先运行 run_cartesian_relax。")
+
+    nmap = _build_numbering_impl(pdb)
+    first_chain = nmap.chains[0] if nmap.chains else ""
+
+    # 解析与校验位点：与突变/预检共用同一解析实现（P0 收敛）。编号不存在直接拒绝。
+    # 行为变化：无链编号在多链重号时现在报错（旧版静默取第一条链）。
+    raw_tokens = _split_tokens(positions)
+    if not raw_tokens:
+        return "【执行报错】未提供设计位点。格式如 A_21,A_23（链_PDB编号）；单链结构可用纯编号 21。"
+    resolved, errors = _resolve_targets(raw_tokens, nmap)
+    if errors:
+        detail = "; ".join(f"{e['token']}({e['reason']})" for e in errors)
+        return (f"【执行报错】设计位点解析失败: {detail}（共 {nmap.size} 个残基，"
+                f"第一条蛋白链为 {first_chain or '无'}）。请用 get_rosetta_numbering 核对编号。")
+    design_spec = [(t["numkey"], t["chain"], t["wt"]) for t in resolved]
+
+    out_dir = get_workspace_path("fixbb_design")
+    # 绝对化：runner 进程的 cwd 已是 out_dir，内部再以相对路径开子进程会拼错目录
+    out_dir = os.path.abspath(out_dir)
+    resfile_path = os.path.join(out_dir, "design.resfile")
+    with open(resfile_path, "w", encoding="utf-8") as f:
+        f.write("NATRO\nstart\n")
+        for resi, chain, _wt in design_spec:
+            f.write(f"{resi} {chain} ALLAA\n")
+
+    abs_pdb = os.path.abspath(pdb)
+    abs_res = os.path.abspath(resfile_path)
+    nstruct = max(1, min(int(nstruct), 20))
+    spec_str = " ".join(f"{ch}_{resi}({wt})" for resi, ch, wt in design_spec)
+    extra_args = _params_extra_args()  # ["-extra_res_fa", path] 或 []
+
+    # 生成独立 runner：不 import 本模块（避免重复初始化 RAG），逐位点解析用内联 CA 解析
+    runner_py = f"""import subprocess, os
+out_dir = {out_dir!r}
+cmd = [
+    {os.path.join(ROSETTA_BIN, 'fixbb.linuxgccrelease')!r},
+    "-s", {abs_pdb!r}, "-resfile", {abs_res!r},
+    "-nstruct", "{nstruct}", "-ex1", "-ex2",
+    "-out:prefix", "fx_", "-out:file:scorefile", "fx.sc", "-mute", "all",
+] + {extra_args!r}
+try:
+    proc = subprocess.run(cmd, cwd=out_dir, capture_output=True, text=True, timeout=14400)
+    rc = proc.returncode
+except subprocess.TimeoutExpired:
+    rc = -999
+
+def read_score(path):
+    header, rows = None, []
+    try:
+        with open(path, errors="ignore") as f:
+            for line in f:
+                if not line.startswith("SCORE:"):
+                    continue
+                parts = line.split()[1:]
+                if header is None:
+                    if "total_score" in parts:
+                        header = parts
+                    continue
+                rows.append(dict(zip(header, parts)))
+    except Exception:
+        pass
+    return rows
+
+def parse_ca(pdb_path):
+    aa3to1 = {dict(_AA_3TO1)!r}
+    out = {{}}
+    try:
+        with open(pdb_path, errors="ignore") as f:
+            for line in f:
+                if line.startswith("ATOM") and line[12:16].strip() == "CA":
+                    out[(line[21].strip(), line[22:26].strip())] = aa3to1.get(line[17:20].strip(), "?")
+    except Exception:
+        pass
+    return out
+
+rows = read_score(os.path.join(out_dir, "fx.sc"))
+lines = ["固定骨架设计完成（fixbb，ref2015）",
+         f"输入结构: {os.path.basename(abs_pdb)}",
+         f"设计位点: {spec_str}",
+         f"克隆数: {nstruct}   退出码: {{rc}}"]
+if rows:
+    def _ts(r):
+        try:
+            return float(r.get("total_score", "nan"))
+        except (ValueError, TypeError):
+            return float("inf")
+    lines.append("各克隆 total_score(REU):")
+    for r in rows:
+        lines.append(f"    {{r.get('description', '')}}: {{r.get('total_score', '')}}")
+    best = min(rows, key=_ts)
+    best_name = best.get("description", "")
+    lines.append(f"最优克隆: {{best_name}}（total_score = {{best.get('total_score', '')}} REU）")
+    best_pdb = os.path.join(out_dir, best_name if best_name.endswith(".pdb") else best_name + ".pdb")
+    if os.path.exists(best_pdb):
+        ca = parse_ca(best_pdb)
+        lines.append("逐位点变化（最优克隆）:")
+        for resi, chain, wt in {design_spec!r}:
+            mut = ca.get((chain, resi), "?")
+            mark = "（未变）" if mut == wt else ""
+            lines.append(f"    {{chain}}_{{resi}}: {{wt}} → {{mut}}{{mark}}")
+else:
+    lines.append("未解析到任何 score 行——请检查 design_launcher.log（常见原因: 位点与配体冲突、参数错误）。")
+lines.append("口径: 固定骨架设计不能保证新序列真实折叠（fixbb 官方 limitation），设计结果是计算候选，需实验验证。")
+with open(os.path.join(out_dir, "design_summary.txt"), "w", encoding="utf-8") as f:
+    f.write("\\n".join(lines) + "\\n")
+print("design_summary written")
+"""
+    runner_path = os.path.join(out_dir, "run_design.py")
+    with open(runner_path, "w", encoding="utf-8") as f:
+        f.write(runner_py)
+    try:
+        with open(os.path.join(out_dir, "design_launcher.log"), "w") as log_f:
+            subprocess.Popen([sys.executable, "-u", "run_design.py"],
+                             cwd=out_dir, stdout=log_f, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    except Exception as e:
+        return f"【系统异常】设计任务启动失败: {e}"
+    return (f"【设计任务已挂起】位点 {spec_str}，nstruct={nstruct}。"
+            f"完成后用 read_file 读取 fixbb_design/design_summary.txt 查看最优克隆与逐位点变化。")

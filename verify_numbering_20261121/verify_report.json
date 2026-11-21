@@ -1,0 +1,175 @@
+{
+ "cases": {
+  "single": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/single/cartesian_relax/complex_rosetta_ready.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 64,
+   "key": "A_67",
+   "wt": "G",
+   "mut_aa": "A",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/single/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/single/MUT_64ALA_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  290.849  0.033463  0.033463  0.55\nprotocols.relax.FastRelax: MRP: 4  290.849  290.849  0.033463  0.033463  \nprotocols.relax.FastRelax: CMD: accept_to_best  290.849  0.033463  0.033463  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  290.849  0.033463  0.033463  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 126,
+   "our_size": 126,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "multi_dup": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/multi_dup/cartesian_relax/complex_rosetta_ready.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 127,
+   "key": "B_4",
+   "wt": "D",
+   "mut_aa": "G",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/multi_dup/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/multi_dup/MUT_127GLY_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  702.02  0.21994  0.21994  0.55\nprotocols.relax.FastRelax: MRP: 4  702.02  702.016  0.202491  0.202491  \nprotocols.relax.FastRelax: CMD: accept_to_best  702.02  0.21994  0.21994  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  702.02  0.21994  0.21994  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 252,
+   "our_size": 252,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "icode": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/icode/cartesian_relax/complex_rosetta_ready.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 64,
+   "key": "A_66",
+   "wt": "N",
+   "mut_aa": "G",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/icode/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/icode/MUT_64GLY_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  4223.28  0.0325388  0.0325388  0.55\nprotocols.relax.FastRelax: MRP: 4  4223.28  4223.28  0.0325388  0.0325388  \nprotocols.relax.FastRelax: CMD: accept_to_best  4223.28  0.0325388  0.0325388  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  4223.28  0.0325388  0.0325388  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 127,
+   "our_size": 127,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "altloc": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/altloc/cartesian_relax/complex_rosetta_ready.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 64,
+   "key": "A_67",
+   "wt": "G",
+   "mut_aa": "A",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/altloc/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/altloc/MUT_64ALA_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  291.217  0.0271511  0.0271511  0.55\nprotocols.relax.FastRelax: MRP: 4  291.217  291.206  0.0268102  0.0268102  \nprotocols.relax.FastRelax: CMD: accept_to_best  291.217  0.0271511  0.0271511  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  291.217  0.0271511  0.0271511  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 126,
+   "our_size": 126,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "noca": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/noca/cartesian_relax/complex_rosetta_ready.pdb",
+   "pose_sim": "/home/<user>/projects/rosetta1/verify_numbering_20261121/noca/input_pose_sim.pdb",
+   "cleaned_direct_ddg": "crashed(ROSETTA_CRASH): Rosetta skips missing-backbone residue + chain break; production ddg input is wt_relaxed where residue is already absent",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 63,
+   "key": "A_67",
+   "wt": "G",
+   "mut_aa": "A",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/noca/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/noca/MUT_63ALA_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  662.158  0.0338459  0.0338459  0.55\nprotocols.relax.FastRelax: MRP: 4  662.158  662.14  0.0333979  0.0333979  \nprotocols.relax.FastRelax: CMD: accept_to_best  662.158  0.0338459  0.0338459  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  662.158  0.0338459  0.0338459  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 125,
+   "our_size": 125,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "ligand_before": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_before/cartesian_relax/complex_rosetta_ready.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 64,
+   "key": "A_67",
+   "wt": "G",
+   "mut_aa": "A",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_before/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_before/MUT_64ALA_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  291.217  0.0271511  0.0271511  0.55\nprotocols.relax.FastRelax: MRP: 4  291.217  291.206  0.0268102  0.0268102  \nprotocols.relax.FastRelax: CMD: accept_to_best  291.217  0.0271511  0.0271511  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  291.217  0.0271511  0.0271511  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 126,
+   "our_size": 126,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  },
+  "ligand_tail": {
+   "cleaned": "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_tail/cartesian_relax/input_ligtail.pdb",
+   "raw_equals_cleaned_map": true,
+   "anomalies": [],
+   "idx_probed": 64,
+   "key": "A_67",
+   "wt": "G",
+   "mut_aa": "A",
+   "rc": 0,
+   "wt_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_tail/WT_bj1.pdb"
+   ],
+   "mut_files": [
+    "/home/<user>/projects/rosetta1/verify_numbering_20261121/ligand_tail/MUT_64ALA_bj1.pdb"
+   ],
+   "log_tail": "protocols.relax.FastRelax: CMD: min  290.849  0.033463  0.033463  0.55\nprotocols.relax.FastRelax: MRP: 4  290.849  290.849  0.033463  0.033463  \nprotocols.relax.FastRelax: CMD: accept_to_best  290.849  0.033463  0.033463  0.55\nprotocols.relax.FastRelax: CMD: endrepeat  290.849  0.033463  0.033463  0.55\nprotocols::checkpoint: Deleting checkpoints of FastRelax",
+   "gt_size": 126,
+   "our_size": 126,
+   "mut_hit_position": null,
+   "mut_hit_matches_prediction": false,
+   "mismatches": [],
+   "verdict": "MATCH"
+  }
+ },
+ "rosetta_bin": "/opt/software/rosetta/main/source/bin/cartesian_ddg.linuxgccrelease",
+ "base": "/home/<user>/projects/rosetta1/inputs/pdbs/1MC9_protein.pdb",
+ "summary": {
+  "match": 7,
+  "mismatch": 0,
+  "rosetta_rejected": 0,
+  "total": 7
+ }
+}

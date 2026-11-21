@@ -18,6 +18,8 @@ from typing import Annotated, Literal, TypedDict, Callable
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+import task_runtime  # 任务 ID/路径校验/位点预检/持久状态（2026-11-20 与 FastAPI/MCP 共用）
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -40,6 +42,10 @@ from rosetta_tools import (
     predict_disorder_struct,
     disorder_filter_enabled,
     DISORDER_THRESHOLD,
+    score_structure,
+    calculate_sasa,
+    analyze_interface,
+    run_fixbb_design,
 )
 
 # ==========================================
@@ -61,8 +67,9 @@ llm = ChatOpenAI(
 # ==========================================
 # 2. 工具分组：把"绝对禁止调用"从文本约束变成 schema 层的物理约束
 # ==========================================
-# 主图 reply 节点可用的通用检索/读取工具
-GENERAL_TOOLS = [search_rosetta_docs, read_file]
+# 主图 reply 节点可用的通用检索/读取/分析工具（v0.2 扩展:打分/SASA/界面/设计）
+GENERAL_TOOLS = [search_rosetta_docs, read_file,
+                 score_structure, calculate_sasa, analyze_interface, run_fixbb_design]
 
 # 子图 repair 节点专用的诊断/修复工具
 REPAIR_TOOLS = [check_logs, diagnose_and_fix, auto_repair]
@@ -161,11 +168,42 @@ def _is_tool_error(msg) -> bool:
 
 
 def _llm_has_tool_call(state: AgentState) -> Literal["tool", "__next__"]:
-    """通用 LLM 节点出口：必须产生 tool_call，否则视为异常直接退出"""
+    """通用 LLM 节点出口：必须产生 tool_call，否则视为异常进入纠偏重试"""
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
         return "tool"
     return "__next__"
+
+
+def _make_no_tool_retry_node(step_num: int):
+    """无工具调用兜底节点（2026-11-17）：stepX_llm 输出纯文本时注入纠偏消息并计数。
+
+    背景：glm-4.5-flash 偶发不吐 tool_call 而是"等待弛豫完成"式纯文本，
+    原图把无工具调用直接映射 __end__，导致 step3 被静默丢弃、突变永不启动。
+    """
+
+    def _node(state: AgentState):
+        msg = SystemMessage(
+            content=(
+                f"【系统纠偏】step{step_num} 上一轮没有产生工具调用，流水线无法推进。"
+                "本流水线的工具都是异步挂起式：返回【计算已挂起】/【流水线通关】即代表提交成功，"
+                "不需要等待后台计算。你必须在本轮直接发出本步骤绑定的工具调用，禁止输出任何纯文本。"
+            )
+        )
+        return {
+            "messages": [msg],
+            "failed_step": step_num,
+            "retry_count": state.get("retry_count", 0) + 1,
+        }
+
+    _node.__name__ = f"step{step_num}_no_call_node"
+    return _node
+
+
+def _no_call_route(state: AgentState) -> Literal["retry", "give_up"]:
+    if state.get("retry_count", 0) > MAX_RETRIES:
+        return "give_up"
+    return "retry"
 
 
 # ==========================================
@@ -229,8 +267,8 @@ def _post_tool_route(next_node: str) -> Callable[[AgentState], str]:
     return _route
 
 
-# 进度轮询参数：MAX_PROGRESS_POLLS * PROGRESS_INTERVAL = 30 分钟（默认）
-MAX_PROGRESS_POLLS = 60
+# 进度轮询参数：MAX_PROGRESS_POLLS * PROGRESS_INTERVAL = 50 分钟（2026-11-17 由 30 分钟上调）
+MAX_PROGRESS_POLLS = 100  # 950 突变错峰约 31-32 分钟，60(=30min) 曾差 1 分钟撞顶
 PROGRESS_INTERVAL = 30  # 秒
 
 
@@ -306,6 +344,8 @@ STEP1_SYSTEM = (
 STEP2_SYSTEM = (
     "你是【弛豫阶段】执行 Agent。"
     "任务：调用 run_cartesian_relax 对清洗后的复合物结构进行 Cartesian 弛豫。"
+    "【异步红线】工具是异步挂起式的：返回【计算已挂起】即代表提交成功，弛豫在后台执行，"
+    "本阶段不需要等待弛豫完成，禁止输出任何等待类纯文本。"
     "参数：本步骤固定 nstruct=3；严禁读取或使用用户参数中的「并发数/延迟」字段——那是给 STEP3 饱和突变阶段用的，本阶段一律不参考。"
     "权限：你只能调用系统为你绑定的工具；调用完成后请直接结束本轮。"
     "若工具返回【执行报错】，系统会自动进入修复分支。"
@@ -313,6 +353,8 @@ STEP2_SYSTEM = (
 STEP3_SYSTEM = (
     "你是【饱和突变阶段】执行 Agent。"
     "任务：调用 run_saturation_mutagenesis 提交高通量突变任务。"
+    "【异步红线】run_saturation_mutagenesis 内部会自动等待弛豫产物（score.sc，最长 4 小时）后才开算，"
+    "因此弛豫挂起后【绝不需要等待】：必须在本轮立即发出该工具调用，禁止输出任何等待类纯文本。"
     "【编号铁律】必须把用户原始输入的【PDB 晶体学编号】原样传入，工具内部会自动转换为 Rosetta 绝对行号。"
     "权限：你只能调用 run_saturation_mutagenesis 或 get_rosetta_numbering；"
     "get_rosetta_numbering 只用于核对映射（只读），核对后仍必须把【原始 PDB 编号】传给 run_saturation_mutagenesis，"
@@ -395,7 +437,7 @@ def build_pipeline_subgraph():
     sg.add_conditional_edges(
         "step1_llm",
         _llm_has_tool_call,
-        {"tool": "step1_tool", "__next__": "__end__"},
+        {"tool": "step1_tool", "__next__": "step1_no_call"},
     )
     sg.add_conditional_edges(
         "step1_tool",
@@ -407,7 +449,7 @@ def build_pipeline_subgraph():
     sg.add_conditional_edges(
         "step2_llm",
         _llm_has_tool_call,
-        {"tool": "step2_tool", "__next__": "__end__"},
+        {"tool": "step2_tool", "__next__": "step2_no_call"},
     )
     sg.add_conditional_edges(
         "step2_tool",
@@ -465,13 +507,22 @@ def build_pipeline_subgraph():
     sg.add_conditional_edges(
         "step3_llm",
         _llm_has_tool_call,
-        {"tool": "step3_tool", "__next__": "__end__"},
+        {"tool": "step3_tool", "__next__": "step3_no_call"},
     )
     sg.add_conditional_edges(
         "step3_tool",
         _post_tool_route("progress_poll"),
         {"progress_poll": "progress_poll", "repair": "repair"},
     )
+
+    # ----- 无工具调用兜底（2026-11-17）：LLM 输出纯文本时不再静默 END，就地纠偏重试 -----
+    for _i in (1, 2, 3):
+        sg.add_node(f"step{_i}_no_call", _make_no_tool_retry_node(_i))
+        sg.add_conditional_edges(
+            f"step{_i}_no_call",
+            _no_call_route,
+            {"retry": f"step{_i}_llm", "give_up": "__end__"},
+        )
 
     # 进度轮询闭环：自循环直到 ddg_results.txt 出现或超过 MAX_PROGRESS_POLLS
     sg.add_node("progress_poll", progress_poll_node)
@@ -506,24 +557,47 @@ def build_pipeline_subgraph():
 # ==========================================
 INTENT_SYSTEM = (
     "你是任务意图路由器。根据用户最新输入，只回复以下三种之一，不要输出其他内容：\n"
-    "  pipeline —— 用户提供了蛋白+配体并明确要求执行 Rosetta 流水线（出现突变位点、复合物等关键词）\n"
-    "  query    —— 用户在询问 Rosetta 文档、参数、报错含义（属于知识检索）\n"
-    "  chat     —— 问候、寒暄或与本系统无关的话题"
+    "  pipeline —— 用户提供了蛋白+配体并明确要求提交/执行一次新的 Rosetta 流水线\n"
+    "  query    —— 知识检索、报错含义，以及一切对【已有任务结果】的读取/解读/分析请求\n"
+    "  chat     —— 问候、寒暄或与本系统无关的话题\n"
+    "【补充规则】若用户要求读取/解读/汇总已完成任务的结果（如 ddg_results.txt、ΔΔG 排序、Top 突变、"
+    "最稳定/最不稳定突变、结果分析），即使提到突变、位点等关键词，也必须路由为 query；"
+    "只有用户明确要求提交并执行新的突变计算时才路由为 pipeline，绝不允许把解读请求重新跑一遍流水线。"
 )
 
 
-def router_node(state: AgentState) -> AgentState:
-    """router 节点：意图分类（pipeline / query / chat）"""
-    if state.get("intent"):
-        return {}
+def router_node(state: AgentState, config=None, **kwargs) -> AgentState:
+    """router 节点：意图分类（pipeline / query / chat）
 
+    每轮用户输入都按【最新一条用户消息】重新分类。
+    旧实现在首次分类后直接跳过（state.get("intent") 粘死），导致同一 thread_id
+    的后续消息永远沿用首轮意图：pipeline 任务续聊会把整条流水线从头重跑
+    （重新参数化 + 重新弛豫），chat/query 任务则永远进不了流水线。
+    单次 stream 内 router 仍只在入口执行一次，不影响进行中的流水线。
+
+    2026-11-17 新增【已完成任务硬规则】：工作区已有 summary/ddg_results.txt 时，
+    除表单提交/明确重跑标记外，一切续聊（含提及"突变位点"的解读请求）直接走
+    query/reply——启发式与 LLM 分类都不再参与，杜绝弱模型把解读请求重新跑流水线。
+    """
     msgs = state["messages"]
     user_msgs = [m.content for m in msgs if isinstance(m, HumanMessage)]
-    last_user = user_msgs[-1] if user_msgs else ""
+    last_user = str(user_msgs[-1]) if user_msgs else ""
+
+    # 【已完成任务硬规则】(2026-11-17) 代码级判定，不依赖 LLM
+    if config and "configurable" in config:
+        try:
+            _ws = os.path.join("output", str(config["configurable"].get("thread_id", ".")))
+            if os.path.exists(os.path.join(_ws, "summary", "ddg_results.txt")):
+                rerun_markers = ("【系统强制规则】", "【系统强制批量流水线】", "目标突变位点",
+                                 "重新跑", "重新计算", "重算", "再跑一遍")
+                if not any(m in last_user for m in rerun_markers):
+                    return {"intent": "query"}
+        except Exception:
+            pass
 
     # 启发式快速判定：系统提示里带"突变位点/系统强制规则"等关键字直接走 pipeline
     pipeline_markers = ["突变位点", "目标突变位点", "【系统强制规则】", "【系统强制批量流水线】"]
-    if any(m in str(last_user) for m in pipeline_markers):
+    if any(m in last_user for m in pipeline_markers):
         return {"intent": "pipeline"}
 
     # 其余走 LLM 分类
@@ -548,7 +622,11 @@ def main_route_after_router(state: AgentState) -> Literal["pipeline", "reply"]:
 
 REPLY_SYSTEM = (
     "你是 Rosetta 知识助手。"
-    "若用户询问文档或报错，可调用 search_rosetta_docs / read_file 检索；"
+    "可用工具：search_rosetta_docs（文档检索）、read_file（读取任务工作区文件，"
+    "如 summary/ddg_results.txt、cartesian_relax/score.sc、run_launcher.log）。"
+    "【数据读取纪律】summary/ddg_results.txt 按 链→残基号→数值 排序，文件开头不是最小值；"
+    "要找「ΔΔG 最低/最稳定」的突变，必须用足够大的 max_lines（如 1200）一次读全表（950 行可一次读完），"
+    "再对全部行按第二列数值升序排序后取前 N；严禁把文件前几行当作最小值。"
     "若属于普通寒暄，直接用自然语言回复即可。"
     "查询完毕后请直接给出最终答复，不要无限循环调用工具。"
 )
@@ -706,7 +784,12 @@ def package_results(task_id):
     if not task_id:
         return None, "❌ 找不到任务目标，请先提交执行一次突变任务。"
 
-    task_dir = os.path.join("output", task_id)
+    # task_id 来自界面状态，仍做一次安全校验（防历史值被篡改/手工注入）
+    try:
+        task_dir = task_runtime.validate_task_dir(task_id)
+    except ValueError as e:
+        return None, f"❌ 任务目录校验失败：{e}"
+
     summary_file = os.path.join(task_dir, "summary", "ddg_results.txt")
     mut_dir = os.path.join(task_dir, "saturation_mutagenesis")
 
@@ -760,6 +843,8 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
     user_msg = user_msg or ""
     history = history or []
     error_box = error_box or ""
+    task_id = ""  # 先初始化：异常分支也要引用，避免 try 内崩溃时 NameError 掩盖真实错误
+    task_dir = ""
 
     try:
         protein_id = "unknown"
@@ -767,10 +852,17 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
             file_path = getattr(protein_file, "filepath", getattr(protein_file, "name", str(protein_file)))
             protein_id = os.path.splitext(os.path.basename(file_path))[0]
 
-        task_id = f"task_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}_{protein_id}"
-        workspace_dir = os.path.join("output", task_id)
+        # 2026-11-20：任务 ID 走公共层（标签清洗+随机后缀+独占建目录），与 7779/MCP 一致；
+        # 旧行为为分钟级时间戳+原始文件名，同分钟重复提交会复用同一目录互相覆盖
+        task_id, task_dir = task_runtime.create_task_dir(protein_id)
+        workspace_dir = task_dir
         current_workspace.set(workspace_dir)
-        os.makedirs(workspace_dir, exist_ok=True)
+
+        task_runtime.state_write(workspace_dir, status="created", stage="created",
+                                 input_summary={"protein": str(protein_id)[:80],
+                                                "mutation": str(mutation)[:200],
+                                                "mode": str(mutation_mode)[:40],
+                                                "entry": "gradio_7777"})
 
         prompt_parts = []
 
@@ -780,6 +872,19 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
             shutil.copy(file_path, target_protein)
             prompt_parts.append("蛋白信息: protein.pdb")
 
+        # 提交前位点预检（与 7779 平台/MCP 同一实现）：位点不存在/多链歧义/格式错立即拒绝
+        if mutation.strip() and protein_file is not None:
+            ok, note = task_runtime.precheck_targets(
+                os.path.join(workspace_dir, "protein.pdb"), mutation)
+            if not ok:
+                task_runtime.state_write(workspace_dir, status="failed", stage="precheck",
+                                         error_type="PrecheckFailed",
+                                         error_detail=str(note)[:500])
+                error_box = f"❌ 位点预检失败: {note}"
+                history.append({"role": "assistant", "content": error_box})
+                yield history, "", error_box, task_id
+                return
+
         # 仅上传复合物时自动调 PyMOL 分离配体
         if ligand_file is None and protein_file is not None:
             import subprocess
@@ -787,9 +892,10 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
             target_ligand = os.path.join(workspace_dir, target_ligand_name)
             pymol_bin = os.getenv("PYMOL_BIN", "/usr/local/bin/pymol")
             pymol_cmds = f"load {target_protein}, complex; save {target_ligand}, complex and organic"
-            cmd = f"{pymol_bin} -c -d '{pymol_cmds}'"
             try:
-                subprocess.run(cmd, shell=True, check=True, capture_output=True)
+                # 2026-11-20：shell 字符串 → 参数列表（路径含空格安全，与 7779/MCP 一致）
+                subprocess.run([pymol_bin, "-c", "-d", pymol_cmds],
+                               check=True, capture_output=True, timeout=120)
                 if os.path.exists(target_ligand) and os.path.getsize(target_ligand) > 0:
                     prompt_parts.append(f"【系统强制规则】配体已自动保存为 {target_ligand_name}。")
             except Exception as e:
@@ -838,6 +944,9 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
             "绝对禁止把它的绝对行号输出再传给 run_saturation_mutagenesis，否则会导致双重偏移错位。"
         )
 
+        task_runtime.state_write(task_dir, status="running", stage="conversation",
+                                 status_note="Agent 流执行中")
+        n_tool_errors = 0
         for event in agent_executor.stream({
             "messages": [
                 SystemMessage(content=sys_rule),
@@ -851,6 +960,7 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
                         content = str(last_msg.content)
                         if "【执行报错】" in content or "【系统异常】" in content or "【执行失败】" in content:
                             error_box = f"❌ 底层报错 ({last_msg.name}):\n{content}"
+                            n_tool_errors += 1
                         else:
                             history[-1]["content"] += f"\n\n✅ 执行成功: {last_msg.name}"
                         yield history, "", error_box, task_id
@@ -870,9 +980,18 @@ def submit_task(protein_file, ligand_file, mutation_mode, mutation, params, user
                         history[-1]["content"] += f"\n\n{last_msg.content}"
                         yield history, "", error_box, task_id
 
+        # P1 状态收口：区分 完成/失败/后台仍在运行（不把"流结束"一律当成功）
+        task_runtime.settle_task_after_stream(
+            task_dir, had_error=n_tool_errors > 0, error_type="ToolError",
+            error_detail=error_box[:500] if n_tool_errors else "")
+
     except Exception as e:
         error_detail = traceback.format_exc()
         error_box = f"❌ 致命崩溃: {str(e)}\n\n完整堆栈:\n{error_detail}"
+        if task_dir:
+            task_runtime.settle_task_after_stream(task_dir, had_error=True,
+                                                  error_type=type(e).__name__,
+                                                  error_detail=str(e)[:500])
         yield history, "", error_box, task_id
 
     return history, "", error_box, task_id
@@ -886,11 +1005,16 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
     if protein_file:
         protein_id = os.path.splitext(os.path.basename(protein_file))[0]
 
-    task_id = f"task_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}_{protein_id}"
-    workspace_dir = os.path.join("output", task_id)
+    # 2026-11-20：任务 ID 走公共层（同 Gradio/7779/MCP）；预检同样前置
+    task_id, task_dir = task_runtime.create_task_dir(protein_id)
+    workspace_dir = task_dir
     current_workspace.set(workspace_dir)
-    os.makedirs(workspace_dir, exist_ok=True)
     print(f" 独立任务目录已创建: {workspace_dir}")
+
+    task_runtime.state_write(workspace_dir, status="created", stage="created",
+                             input_summary={"protein": str(protein_id)[:80],
+                                            "mutation": str(mutation or "")[:200],
+                                            "entry": "cli"})
 
     prompt_parts = []
 
@@ -900,15 +1024,26 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
             shutil.copy(protein_file, target_protein)
         prompt_parts.append("蛋白信息: protein.pdb")
 
+    if str(mutation or "").strip() and protein_file:
+        ok, note = task_runtime.precheck_targets(target_protein, mutation)
+        if not ok:
+            task_runtime.state_write(workspace_dir, status="failed", stage="precheck",
+                                     error_type="PrecheckFailed",
+                                     error_detail=str(note)[:500])
+            print(f" 位点预检失败: {note}")
+            return
+        print(f" {note}")
+
     if not ligand_file and protein_file:
         import subprocess
         target_ligand_name = "ligand.pdb"
         target_ligand = os.path.join(workspace_dir, target_ligand_name)
         pymol_bin = os.getenv("PYMOL_BIN", "/usr/local/bin/pymol")
         pymol_cmds = f"load {target_protein}, complex; save {target_ligand}, complex and organic"
-        cmd = f"{pymol_bin} -c -d '{pymol_cmds}'"
         try:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            # 2026-11-20：shell 字符串 → 参数列表（路径含空格安全）
+            subprocess.run([pymol_bin, "-c", "-d", pymol_cmds],
+                           check=True, capture_output=True, timeout=120)
             if os.path.exists(target_ligand) and os.path.getsize(target_ligand) > 0:
                 print(" 系统提示: 已通过 PyMOL 自动分离并提取配体坐标至 ligand.pdb")
                 prompt_parts.append(f"【系统强制规则】配体已自动保存为 {target_ligand_name}。")
@@ -953,6 +1088,9 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
 
     config = {"configurable": {"thread_id": task_id}}
 
+    task_runtime.state_write(task_dir, status="running", stage="conversation",
+                             status_note="Agent 流执行中")
+    n_tool_errors = 0
     try:
         for event in agent_executor.stream(
             {"messages": [SystemMessage(content=sys_rule), HumanMessage(content=final_prompt)]},
@@ -966,6 +1104,7 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
                         content = str(last_msg.content)
                         if "【执行报错】" in content or "【系统异常】" in content:
                             print(f" 底层报错 ({last_msg.name}):\n{content}")
+                            n_tool_errors += 1
                         else:
                             print(f"✅ 执行成功: {last_msg.name}")
                     elif last_msg.type == "ai" and last_msg.content:
@@ -976,8 +1115,15 @@ def run_cli(protein_file, ligand_file, mutation, params, user_msg):
                         print(f"\n{last_msg.content}\n")
                     elif last_msg.type == "human" and getattr(last_msg, "name", "") == "DisorderDirector":
                         print(f"\n{last_msg.content}\n")
+        # P1 状态收口（与 Gradio/7779 同一实现）
+        task_runtime.settle_task_after_stream(task_dir, had_error=n_tool_errors > 0,
+                                              error_type="ToolError",
+                                              error_detail="CLI 流出现工具报错")
     except Exception as e:
         print(f" 运行崩溃: {str(e)}")
+        task_runtime.settle_task_after_stream(task_dir, had_error=True,
+                                              error_type=type(e).__name__,
+                                              error_detail=str(e)[:500])
 
 
 # ==========================================

@@ -1,6 +1,6 @@
 # Rosetta Agent
 
-把 Rosetta 三段流水线（**配体参数化 → Cartesian 弛豫 → 饱和突变 ΔΔG**）用 LLM（LangGraph）串起来，跑高通量突变扫描，跑完自动接 SKEMPI / PDBbind 实验数据库做可信度评估。中间还嵌了一个 **ESM-2 disorder** 过滤节点，避免在结构不稳定区域浪费 Rosetta 计算。
+把 Rosetta 三段流水线（**配体参数化 → Cartesian 弛豫 → 饱和突变 ΔΔG**）用 LLM（LangGraph）串起来，跑高通量突变扫描；跑完可选接 SKEMPI / PDBbind 数据做**展示性对照（默认「未评测」，不做可信度结论）**。另有一个 **ESM-2 disorder 探索性信号节点（默认关闭）**，开启后也仅作展示、不自动剔除位点。
 
 > 既不是"套壳 LLM 调 Python 脚本"，也不是"裸 bash 跑 Rosetta"——把"顺序、权限、错误恢复"全部编码进图拓扑，prompt 只负责说明意图。
 
@@ -24,8 +24,12 @@
 ```
 rosetta-agent/
 ├── rosetta_agent.py        # 主程序：LangGraph 图 + Gradio Web / CLI 入口
+├── rosetta_server.py       # FastAPI+SSE 平台（端口 7779，static/ 前端）：任务提交/进度/产物/解读
 ├── rosetta_tools.py        # 底层工具：Rosetta / PyMOL / SKEMPI / PDBbind / RAG
-├── rosetta_mcp_server.py   # MCP Server：12 原子工具 + 3 管理工具暴露给 Claude Desktop / Cursor / Trae
+├── rosetta_mcp_server.py   # MCP Server：16 原子工具 + 3 管理工具暴露给 Claude Desktop / Cursor / Trae
+├── task_runtime.py         # 任务公共层：任务 ID/路径校验/位点解析（唯一实现）/持久任务状态
+├── eval_v01_guardrails.py  # v0.1 科学口径护栏测试（26 项）
+├── eval_p0_fixes_20261120.py # P0 编号/隔离/状态修复测试（75 项）
 ├── run_cli.sh              # 批量 CLI 驱动 (循环 inputs/pdbs/*.pdb)
 ├── setup_blackwell.sh      # Blackwell GPU 服务器上的 torch cu128 一键切换
 ├── environment.yml         # Conda 环境 (Python 3.10 + langchain/langgraph/gradio …)
@@ -34,7 +38,8 @@ rosetta-agent/
 ├── inputs/                 # 输入 (PDB / 配体)，结构由 .gitkeep 占位
 │   ├── pdbs/
 │   └── ligand/
-├── output/                 # 运行产物 (每个任务一个 task_YYYYMMDD_HHMM_<PDB>/)
+├── output/                 # 运行产物 (每个任务一个 task_YYYYMMDD_HHMMSSxx_<PDB>/)
+│   └── task_*/task_status.json   # 任务持久状态（重启后仍可查询）
 └── rosetta_manuals/        # RAG 语料 + 实验数据库
     ├── rosetta_docs/                 # RosettaCommons/documentation 官方文档（relax/cartesian-ddG/打分/排错…）
     ├── 报错解决笔记.txt
@@ -48,15 +53,15 @@ rosetta-agent/
 
 ```
 主图 rosetta_agent.py:
-  START → router ─┬─ pipeline (子图) → binding_eval → summarize → END
-                   └─ reply ⇄ reply_tools ───────────────────────────┘
+  START → router ─┬─ pipeline (子图) → skempi_eval → summarize → END
+                   └─ reply ⇄ reply_tools ─────────────────────────┘
 
 子图 pipeline (build_pipeline_subgraph):
-  step1_llm ─(tool_call)→ step1_tool ─(成功)→ disorder_check → step2_llm → step2_tool
-       │                     │                    │                 │
-   (无tool_call)         (失败→repair)        (≥阈值位点         (失败→repair)
-       ▼                     ▼                  注入 step3)           ▼
-      END                  repair ◀────────────── repair ◀──────────  repair
+  step1_llm ─(tool_call)→ step1_tool ─(成功)→ step2_llm → step2_tool ─(成功)→ disorder_check → step3_llm → step3_tool
+       │                     │                            │                │                    │               │
+   (无tool_call)         (失败→repair)                (失败→repair)     (失败→repair)       (默认关闭,        (失败→repair)
+       ▼                     ▼                            ▼                ▼                仅播报)              ▼
+      END                  repair ◀───────────────────── repair ◀──────── repair ◀─────────────  repair
                               │
                           (tool_call)
                               ▼
@@ -66,8 +71,9 @@ rosetta-agent/
 **关键设计**：
 
 - 每个 step 的 LLM 都 `bind_tools([本步工具])`，把"绝对禁止调用"从 prompt 文字变成 **schema 物理约束**——LLM 想调别的也调不出来。
-- `disorder_check` 节点是真正的 ML 推理：用 [ESM-2 t12 35M](https://github.com/facebookresearch/esm) 给每个残基打 disorder 概率，≥0.5 视为无序，结果注入 `step3_llm` 的上下文作为警告。
+- `disorder_check` 节点**默认关闭**（`WB_DISORDER_FILTER_ENABLED=0`）：关闭时只播报「未评估」，不推理、不排除位点；显式开启后输出 ESM-2 启发式**探索性信号**（该分数未在任何无序数据集上校准，不是"无序概率"），不自动过滤位点。详见 §5。
 - 错误恢复走专用 `repair` 分支（调 `check_logs` / `diagnose_and_fix` / `auto_repair`），而不是把 force-fix 写进 prompt。
+- 位点解析只有一个实现（`task_runtime.resolve_targets`）：提交预检、`get_rosetta_numbering` 核对、`run_saturation_mutagenesis` 执行、`run_fixbb_design` 四处共用，保证"预检通过的位点 = 执行时映射的位点"。
 
 ---
 
@@ -81,9 +87,13 @@ rosetta-agent/
 
 ### 编号铁律
 
-只接受 **PDB 晶体学编号**（如 `76,73`）。`run_saturation_mutagenesis` 内部通过 `_build_rosetta_numbering` 自动映射到 Rosetta 绝对行号，整条流水线只做一次。
+只接受 **PDB 晶体学编号**（如 `76,73`，多链/插入码建议显式写 `A_76`、`A_100A`）。`run_saturation_mutagenesis` 内部通过 `task_runtime.build_numbering` 自动映射到 Rosetta 绝对行号，整条流水线只做一次。
 
+- **多链蛋白同号残基必须带链 ID**（如 `A_76`）：无链输入遇到多链同号会明确报错列出候选链，不会静默取第一条链。
+- 插入码（如 `100A`）按 编号+插入码 精确匹配，不会被折叠成 100。
+- 错误链名、不存在的位点、`B76` 这类歧义格式一律**报错**，不做"提取数字"式的猜测匹配。
 - `get_rosetta_numbering` 只读核对，**别把它的绝对行号回传给 `run_saturation_mutagenesis`**，会双重偏移。
+- 诚实边界：绝对行号是按弛豫清洗规则静态推断的 Rosetta pose 编号；极端情况（零占用度原子等）以实际 Rosetta 日志为准（任务目录 `saturation_mutagenesis/rosetta_tasks.txt` 的 `# [编号映射]` 注释行为审计记录）。
 
 ---
 
@@ -101,13 +111,15 @@ rosetta-agent/
 
 ### 4.3 触发条件
 
-1. **真实 PDB ID**：任务目录名必须以真实 4 字符 PDB 代码结尾（`task_YYYYMMDD_HHMM_<PDB>`）
+1. **真实 PDB ID**：任务标签（末段）填真实 4 字符 PDB 代码（`task_<日期>_<时间+后缀>_<PDB>`；旧任务的历史格式同样兼容）
 2. **数据库收录**：
    - SKEMPI：蛋白-蛋白相互作用体系（**不包括**单链酶如 1MC9）
    - PDBbind：蛋白-小分子复合物（HIV protease / thrombin / carbonic anhydrase 等有大量配体）
 3. **多配体评估（PDBbind）**：需要同一蛋白 ≥3 个不同 PDB ID 才有 Spearman ρ
 
-### 4.4 阈值
+### 4.4 阈值（历史设计，v0.1 起默认停用）
+
+下表为早期设计中的分级设想，**当前默认不产出任何评级**：
 
 | 数据库 | 指标 | 强 | 中 | 弱 |
 |---|---|---|---|---|
@@ -146,16 +158,21 @@ MD 抽取的结构（如 `best_relaxed_98840.pdb` 来自 1MC9 经 MD）会把无
 
 ```text
 output/
-└── task_20260827_1934_<pdb_id>/     # <pdb_id> 必须是真实 PDB 代码才能触发 SKEMPI 评估
+└── task_<日期>_<时分秒+随机后缀>_<标签>/   # 同标签同秒重复提交不会再互相覆盖；
+    │                                      # <标签> 为清洗后的文件名/PDB 代码（真实 PDB 代码结尾才能触发实验对照）
     ├── protein.pdb
     ├── ligand.pdb / ligand.mol2
+    ├── task_status.json             # 任务持久状态：status(created/running/completed/failed/interrupted)、
+    │                                #   阶段/错误/产物路径/runner 进程号/manifest（输入结构、位点、参数、
+    │                                #   整合边界；服务重启后仍可查询，GROMACS 整合读取此文件）
     ├── parameterize_ligand/         # .params / .mol2 / *_0001.pdb
-    ├── cartesian_relax/             # wt_relaxed.pdb / score.sc / *.log
-    ├── saturation_mutagenesis/      # .ddg / run_ddg.py / run_launcher.log
-    ├── disorder/                    # disorder_scores.csv（ESM-2 全量分数）
+    ├── cartesian_relax/             # wt_relaxed.pdb / score.sc / *.log / run_relax_parallel.py
+    ├── saturation_mutagenesis/      # .ddg / run_ddg.py / rosetta_tasks.txt(JSON 参数列表任务行+编号审计注释)
+    ├── disorder/                    # disorder_scores.csv（ESM-2 全量分数，仅显式开启时）
     └── summary/
-        ├── ddg_results.txt
-        └── binding_eval_report.txt  # SKEMPI + PDBbind 对照
+        ├── ddg_results.txt          # ΔΔG(REU, min(MUT)-min(WT))，按 链→残基→数值 排序
+        ├── ddg_chart.png            # 结果条形图（7779 平台生成）
+        └── binding_eval_report.txt  # SKEMPI + PDBbind 对照（默认「未评测」数据表）
 ```
 
 ---
@@ -253,26 +270,38 @@ python rosetta_mcp_server.py --transport sse --port 8000     # SSE 模式（远�
 }
 ```
 
-暴露内容：**12 个原子工具**（与 LangGraph 共用同一实现，零逻辑重复）+ **3 个管理工具**（`create_task` 建任务、`list_tasks` 看产物状态、`set_workspace` 切工作区）。客户端 LLM 直接编排三段流水线：
+暴露内容：**16 个原子工具**（与 LangGraph 共用同一实现，零逻辑重复）+ **3 个管理工具**（`create_task` 建任务、`list_tasks` 看产物状态与持久状态、`set_workspace` 切工作区）。每个原子工具支持**显式传 `task_id`** 单次绑定任务（多任务交错时推荐）；不传则作用于"当前工作区"（兼容旧编排）。客户端 LLM 直接编排三段流水线：
 
 `create_task → parameterize_ligand → run_cartesian_relax → predict_disorder → run_saturation_mutagenesis → evaluate_against_skempi / evaluate_against_pdbbind`
 
-### 8.5 Workbench（已迁出）
+### 8.5 平台（FastAPI+SSE，推荐日常使用）
 
-Protein Design Workbench（CLI / GROMACS MD / MM/PBSA / 网页智能体）已于 2026-11-14 迁出至独立仓库 **`~/projects/ros-gro`**（含全部 runs 数据与文档）。本仓库保留旧 Rosetta-Agent 流水线（§8.1–8.4）。访问智能体网页：`http://<服务器IP>:7860`（由 ros-gro 提供）。
+```bash
+python rosetta_server.py            # 0.0.0.0:7779，浏览器打开 http://<服务器IP>:7779
+```
+
+上传 PDB(+可选配体)+位点 → 自动预检（位点不存在/多链歧义立即 400）→ 三段流水线 → SSE 实时进度 → 结果解读图表 → 一键打包下载。历史任务列表含持久状态（completed/failed/running/interrupted，服务重启后仍可查询：`GET /api/tasks/{id}/status`）。重启后 SSE 事件流不可回放（内存态），LangGraph 对话历史也不可恢复——续聊接口会在新上下文中明示这一点。
+
+### 8.6 Workbench（已迁出）
+
+Protein Design Workbench（CLI / GROMACS MD / MM/PBSA / 网页智能体）已于 2026-11-14 迁出至独立仓库 **`~/projects/ros-gro`**（含全部 runs 数据与文档）。本仓库保留旧 Rosetta-Agent 流水线（§8.1–8.5）。访问智能体网页：`http://<服务器IP>:7860`（由 ros-gro 提供）。
 
 ---
 
-## 9. 排错
+## 9. 排错与状态定位
 
 | 现象 | 排查方向 |
 |---|---|
-| `.ddg` 文件 0 字节 | 看 `saturation_mutagenesis/run_launcher.log`，多半并发过大打挂 Rosetta |
-| 弛豫中途 `score.sc` 写不出来 | `cartesian_relax/` 下 `score_*.sc` 是不是 3 个都在 |
+| 任务状态不明 | 先看 `output/<task>/task_status.json`（status/status_note/runner_pids/manifest）；平台任务再查 `GET /api/tasks/{id}/status` |
+| 服务重启后任务还能查吗 | 能查状态与产物（状态文件在任务目录内）；SSE 事件与对话历史不可回放；`status=running` 时系统按 runner 进程存活+产物自动判 running/interrupted，判不了会标「待核实」 |
+| 位点预检 400 | 报错会列出链/残基信息与逐位点原因；用 `get_rosetta_numbering` 核对；多链同号必须带链（A_76）；插入码写 100A |
+| `.ddg` 文件 0 字节 | 看 `saturation_mutagenesis/run_launcher.log` 与对应 `mut_*.log` 末尾的 `[exit code N]`，多半并发过大打挂 Rosetta |
+| 弛豫中途 `score.sc` 写不出来 | `cartesian_relax/` 下 `relax_run_*.log` 末尾有各路退出码；`score_*.sc` 是否都在 |
 | 报"找不到 .params" | 确认 `parameterize_ligand/` 里有 `.params` 落盘 + 目录权限 |
 | SKEMPI 报"未找到 PDB XXX" | 该 PDB 不在 SKEMPI 收录范围（SKEMPI 只有蛋白-蛋白相互作用） |
 | SKEMPI 报"位点重叠 0" | `ddg_results.txt` 里的 key 格式与 SKEMPI 突变解析对不上（链不参与匹配） |
-| ESM-2 报"fair_esm 未安装" | 跑 `pip install fair-esm torch`，或接受 B-factor 启发式回退 |
+| ESM-2 报"fair_esm 未安装" | 跑 `pip install fair-esm torch`，或接受 B-factor 启发式回退（均默认不参与过滤） |
+| ΔΔG 是什么单位 | **REU**（Rosetta 能量单位），min(MUT)-min(WT)；是计算筛选指标，不是实验结合自由能，不等于实验验证 |
 
 ---
 

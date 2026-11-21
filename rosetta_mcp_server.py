@@ -1,6 +1,6 @@
 """Rosetta-Agent MCP Server
 
-把 rosetta_tools.py 的 12 个原子工具通过 MCP 协议暴露给 Claude Desktop / Cursor / Trae 等
+把 rosetta_tools.py 的 16 个原子工具通过 MCP 协议暴露给 Claude Desktop / Cursor / Trae 等
 MCP Client，让任意支持 MCP 的 IDE Agent 直接编排三段流水线：
 
     create_task → parameterize_ligand → run_cartesian_relax
@@ -33,6 +33,7 @@ import shutil
 import argparse
 import datetime
 import functools
+import inspect
 import subprocess
 
 # ==========================================
@@ -40,6 +41,9 @@ import subprocess
 # ==========================================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 os.chdir(PROJECT_ROOT)
+
+# 任务运行时公共层（任务 ID/校验/持久状态）
+import task_runtime
 
 from dotenv import load_dotenv
 
@@ -50,7 +54,7 @@ _rosetta_bin = os.getenv("ROSETTA_BIN_DIR", "/opt/software/rosetta/main/source/b
 os.environ["PATH"] = _rosetta_bin + ":" + os.environ.get("PATH", "")
 
 # ==========================================
-# 1. 复用 rosetta_tools 的 12 个原子工具（零逻辑重复）
+# 1. 复用 rosetta_tools 的 16 个原子工具（零逻辑重复）
 # ==========================================
 from rosetta_tools import (
     read_file,
@@ -65,6 +69,10 @@ from rosetta_tools import (
     evaluate_against_pdbbind,
     predict_disorder,
     search_rosetta_docs,
+    score_structure,
+    calculate_sasa,
+    analyze_interface,
+    run_fixbb_design,
     current_workspace,
 )
 
@@ -74,9 +82,13 @@ mcp = FastMCP(
     "rosetta-agent",
     instructions=(
         "Rosetta 三段流水线 MCP 工具集。典型编排顺序："
-        "create_task 创建任务 → parameterize_ligand 参数化 → run_cartesian_relax 弛豫（后台异步）"
+        "create_task 创建任务 → parameterize_ligand 参数化（纯蛋白任务会自动跳过）"
+        " → run_cartesian_relax 弛豫（后台异步）"
         " → predict_disorder 检查无序区 → run_saturation_mutagenesis 饱和突变（后台异步）"
         " → evaluate_against_skempi / evaluate_against_pdbbind 实验对照。"
+        "扩展分析/设计工具：score_structure 打分、calculate_sasa 总溶剂可及面积、"
+        "analyze_interface 多链界面指标（dG_separated/dG_cross/dSASA/packstat）、"
+        "run_fixbb_design 固定骨架多点设计（后台，完成后 read_file 读 fixbb_design/design_summary.txt）。"
         "弛豫与突变均为后台提交、立即返回：用 list_tasks 查产物状态、check_logs 查日志、read_file 读结果。"
         "【编号铁律】run_saturation_mutagenesis 只接收 PDB 晶体学编号（如 76,73），"
         "内部自动转换为 Rosetta 绝对行号，切勿把 get_rosetta_numbering 的行号回传（双重偏移）。"
@@ -84,41 +96,127 @@ mcp = FastMCP(
 )
 
 # ==========================================
-# 2. 工作区管理：进程级全局 + 每次调用前重注入
+# 2. 工作区管理：按 MCP 会话隔离 + 显式 task_id 优先
 # ==========================================
-# MCP Server 的每次工具调用运行在独立 async context 中，contextvar 在单次调用内 set
-# 未必延续到下一次调用。因此"当前任务"存进程级全局，
-# 由 _apply_workspace() 在每次工具执行前重新注入 contextvar。
+# 2026-11-21 复核修复（取代 11-20 的进程级全局方案）：
+#   旧方案缺陷（已用两个真实 MCP 会话交错实测证实）：无参原子工具读取进程级共享
+#   _ACTIVE_TASK，SSE/HTTP 模式下客户端 B set_workspace 会劫持客户端 A 的后续调用。
+#   新方案：
+#   - "当前任务"按 MCP 会话（session_id）隔离：每个工具经 Tool.from_function
+#     (context_kwarg='ctx') 注入请求上下文，工具内读取本会话绑定的任务；
+#   - 每个原子工具同时保留可选参数 task_id（__signature__ 注入 schema，已实测
+#     FastMCP 暴露的 inputSchema 真实包含），单次调用可显式绑定任意任务；
+#   - stdio 模式每客户端独立进程，等价天然隔离；无 ctx 的老式调用回退进程级
+#     _ACTIVE_TASK（仅 stdio 单会话场景可达）。
+#   旧客户端无需调整：create_task → set_workspace → 原子工具 的编排在新语义下
+#   于同一会话内行为不变。
 
-_ACTIVE_TASK = {"task_id": None}
+_ACTIVE_TASK = {"task_id": None}   # 兼容回退：仅当调用未携带 MCP 会话上下文时使用
+_SESSION_TASKS = {}                # 会话隔离核心：session_id -> task_id | None
 
 
-def _apply_workspace():
-    """把 _ACTIVE_TASK 对应的任务目录注入 current_workspace（与 TaskAwareToolNode 同等效果）"""
-    task_id = _ACTIVE_TASK["task_id"]
+def _resolve_task_dir(task_id: str):
+    """校验 task_id 并返回任务目录绝对路径；非法/不存在返回 None（不抛异常）。"""
+    try:
+        return task_runtime.validate_task_dir(task_id, base=task_runtime.OUTPUT_BASE)
+    except ValueError:
+        return None
+
+
+def _session_key(ctx) -> str | None:
+    """从 MCP 请求上下文提取会话标识；拿不到返回 None（回退进程级）。
+
+    SDK 1.29.1 的 Context/ServerSession 没有公开 session_id 属性（已实测），
+    但每个客户端会话对应进程内唯一的 ServerSession 实例——同一进程内同时存活
+    的会话地址不会复用，故以 id(session) 作为会话键。权衡（如实记录）：
+    - 会话断开重连 → 新实例 → 绑定失效，客户端需重新 create_task/set_workspace
+      （MCP 会话语义本就如此，且旧的全局共享方案在该场景同样不可靠）；
+    - CPython 地址复用发生在旧对象被 GC 之后，极小概率让新会话继承旧绑定，
+      等价于旧行为，不会导致"同时活动的两个会话互相串任务"（隔离目标场景）；
+    - 条目数 = 历史会话总数，每条几十字节，可忽略；不做清理。
+    """
+    if ctx is None:
+        return None
+    sess = getattr(ctx, "session", None)
+    if sess is not None:
+        return f"sess:{id(sess)}"
+    return None
+
+
+def _current_task_id(ctx=None):
+    key = _session_key(ctx)
+    if key is not None:
+        return _SESSION_TASKS.get(key)
+    return _ACTIVE_TASK["task_id"]
+
+
+def _set_current_task_id(task_id, ctx=None):
+    """绑定"当前任务"：有会话上下文 → 只写本会话；无 → 写进程级（stdio 兼容）。"""
+    task_id = task_id or None
+    key = _session_key(ctx)
+    if key is not None:
+        _SESSION_TASKS[key] = task_id
+    _ACTIVE_TASK["task_id"] = task_id  # 展示层标记（list_tasks "← 当前工作区"）
+
+
+def _apply_workspace(ctx=None):
+    """把本会话（或显式）任务目录注入 current_workspace（与 TaskAwareToolNode 同等效果）"""
+    task_id = _current_task_id(ctx)
     if task_id:
-        current_workspace.set(os.path.join("output", task_id))
+        task_dir = _resolve_task_dir(task_id)
+        current_workspace.set(task_dir if task_dir else ".")
     else:
         current_workspace.set(".")
 
 
 def _wrap_tool(lc_tool):
-    """包装 LangChain @tool：执行前注入工作区。
+    """包装 LangChain @tool：执行前注入工作区，并为每次调用提供显式 task_id。
 
-    functools.wraps 保留原函数签名与 docstring，
-    MCP 的 input schema / 工具描述即由它自动生成，无需手工维护两套定义。
+    functools.wraps 保留原函数签名与 docstring；再用 __signature__ 追加一个
+    keyword-only 的可选参数 task_id（默认空串）——MCP 的 input schema 由该签名
+    自动生成，客户端可按调用传 task_id 实现任务绑定，旧客户端不传则作用于
+    本会话的"当前任务"（会话隔离，见 _SESSION_TASKS）。
+    ctx 参数不进 schema（func_metadata skip_names），由 SDK 在调用时注入。
     """
     fn = lc_tool.func
+    orig_sig = inspect.signature(fn)
+    new_sig = orig_sig.replace(parameters=list(orig_sig.parameters.values()) + [
+        inspect.Parameter("task_id", inspect.Parameter.KEYWORD_ONLY, default="",
+                          annotation=str),
+    ])
 
     @functools.wraps(fn)
-    def _wrapped(*args, **kwargs):
-        _apply_workspace()
+    def _wrapped(*args, task_id: str = "", ctx=None, **kwargs):
+        if task_id:
+            task_dir = _resolve_task_dir(task_id)
+            if not task_dir:
+                return (f"【执行报错】task_id '{task_id}' 非法或任务目录不存在，"
+                        "请先用 list_tasks 查看任务列表。")
+            current_workspace.set(task_dir)
+            return fn(*args, **kwargs)
+        _apply_workspace(ctx)
         return fn(*args, **kwargs)
 
+    _wrapped.__signature__ = new_sig
     return _wrapped
 
 
-# 注册 12 个原子工具
+def _register_tool(fn, name: str, description: str):
+    """显式注册：Tool.from_function(context_kwarg='ctx') 让 SDK 把请求上下文注入
+    fn 的 ctx 参数，并从 schema 中排除。依赖私有 _tools 仅作登记，失败时回退
+    装饰器注册（退化为进程级共享，并在 stderr 明示）。"""
+    try:
+        from mcp.server.fastmcp.tools.base import Tool
+        tool = Tool.from_function(fn, name=name, description=description,
+                                  context_kwarg="ctx")
+        mcp._tool_manager._tools[tool.name] = tool
+    except Exception as e:  # pragma: no cover
+        print(f"[rosetta_mcp] 工具 {name} 显式注册失败({e})，回退装饰器注册"
+              "（无按会话隔离，建议传显式 task_id）", file=sys.stderr)
+        mcp.tool()(fn)
+
+
+# 注册原子工具（v0.2: 12 原子 + 4 扩展分析/设计 = 16 个）
 _ATOMIC_TOOLS = [
     read_file,
     check_logs,
@@ -132,20 +230,26 @@ _ATOMIC_TOOLS = [
     evaluate_against_pdbbind,
     predict_disorder,
     search_rosetta_docs,
+    score_structure,
+    calculate_sasa,
+    analyze_interface,
+    run_fixbb_design,
 ]
 
 for _t in _ATOMIC_TOOLS:
-    mcp.tool()(_wrap_tool(_t))
+    _register_tool(_wrap_tool(_t), _t.name, _t.description)
 
 
 # ==========================================
 # 3. 管理工具：create_task / list_tasks / set_workspace
+#    （普通函数 + 显式注册，ctx 由 SDK 注入、不进 schema；会话内绑定"当前任务"）
 # ==========================================
-@mcp.tool()
-def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = "") -> str:
-    """【管理工具】创建新任务工作区并设为当前工作区：把蛋白/配体拷贝到
-    output/task_<时间戳>_<label>/；未提供配体时自动调 PyMOL 从复合物中分离有机配体。
-    创建后即可按 parameterize_ligand → run_cartesian_relax → run_saturation_mutagenesis 编排。
+def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = "", ctx=None) -> str:
+    """【管理工具】创建新任务工作区并设为本会话当前工作区：把蛋白/配体拷贝到
+    output/task_<时间戳+随机后缀>_<label>/（同标签同时间重复创建不会再互相覆盖）；
+    未提供配体时自动调 PyMOL 从复合物中分离有机配体。
+    创建后即可按 parameterize_ligand → run_cartesian_relax → run_saturation_mutagenesis 编排；
+    后续原子工具可显式传 task_id 绑定本任务（多任务交错时推荐），不传则作用于本会话当前工作区。
 
     Args:
         protein_pdb_path: 受体蛋白/复合物 PDB 路径（绝对路径，或相对项目根的路径）
@@ -160,9 +264,12 @@ def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = 
         return f"【执行报错】未找到蛋白文件：{protein_pdb_path}"
 
     label = (task_label or "").strip() or os.path.splitext(os.path.basename(protein_pdb_path))[0]
-    task_id = f"task_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}_{label}"
-    workspace_dir = os.path.join(PROJECT_ROOT, "output", task_id)
-    os.makedirs(workspace_dir, exist_ok=True)
+    # P0：标签白名单清洗 + 独占建目录（旧实现为分钟级时间戳+原始标签，可被 ../../ 注入）
+    task_id, workspace_dir = task_runtime.create_task_dir(label)
+    task_runtime.state_write(workspace_dir, status="created", stage="created",
+                             input_summary={"protein": os.path.basename(protein_pdb_path)[:80],
+                                            "ligand": os.path.basename(ligand_path or "")[:80],
+                                            "entry": "mcp"})
 
     target_protein = os.path.join(workspace_dir, "protein.pdb")
     if os.path.abspath(protein_pdb_path) != os.path.abspath(target_protein):
@@ -187,8 +294,8 @@ def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = 
         pymol_cmds = f"load {target_protein}, complex; save {target_ligand}, complex and organic"
         try:
             subprocess.run(
-                f"{pymol_bin} -c -d '{pymol_cmds}'",
-                shell=True, check=True, capture_output=True,
+                [pymol_bin, "-c", "-d", pymol_cmds],
+                check=True, capture_output=True, timeout=120,
             )
             if os.path.exists(target_ligand) and os.path.getsize(target_ligand) > 0:
                 notes.append("PyMOL 已自动分离配体为 ligand.pdb")
@@ -197,19 +304,21 @@ def create_task(protein_pdb_path: str, ligand_path: str = "", task_label: str = 
         except Exception as e:
             notes.append(f"PyMOL 分离配体失败：{e}")
 
-    _ACTIVE_TASK["task_id"] = task_id
-    _apply_workspace()
+    _set_current_task_id(task_id, ctx)
+    _apply_workspace(ctx)
     return (
         f"【任务已创建】task_id = {task_id}\n"
         f"工作区：output/{task_id}\n"
         + "\n".join(f"  - {n}" for n in notes)
         + "\n下一步：parameterize_ligand → run_cartesian_relax → run_saturation_mutagenesis"
+        + "\n（多任务交错时，建议给每个原子工具显式传 task_id 绑定本任务）"
     )
 
 
-@mcp.tool()
-def list_tasks() -> str:
-    """【管理工具】列出 output/ 下所有任务目录及各阶段产物状态（参数化/弛豫/突变/汇总/disorder），用于配合 set_workspace 选择要操作的任务。"""
+def list_tasks(ctx=None) -> str:
+    """【管理工具】列出 output/ 下所有任务目录及各阶段产物状态（参数化/弛豫/突变/汇总/disorder），
+    并附 task_status.json 的生效状态（completed/failed/running/interrupted，重启后仍可查询），
+    用于配合 set_workspace 选择要操作的任务。"← 当前工作区"按本会话绑定标记。"""
     base = os.path.join(PROJECT_ROOT, "output")
     rows = []
     if os.path.isdir(base):
@@ -232,25 +341,40 @@ def list_tasks() -> str:
                 f"summary={'Y' if _has('summary/ddg_results.txt', 'tool5_summary/ddg_results.txt') else '-'} | "
                 f"disorder={'Y' if _has('disorder/disorder_scores.csv') else '-'}"
             )
-            active = "  ← 当前工作区" if task_id == _ACTIVE_TASK["task_id"] else ""
-            rows.append(f"{task_id}{active}\n    {status}")
+            # P1：持久状态（无状态文件的旧任务显示 status=-）
+            eff = task_runtime.state_effective(task_dir)
+            st = eff["status"] if eff["state"] else "-"
+            active = "  ← 本会话当前工作区" if task_id == _current_task_id(ctx) else ""
+            rows.append(f"{task_id}{active}\n    {status} | status={st}"
+                        + (f"（{eff['note']}）" if eff.get("note") else ""))
     if not rows:
         return "output/ 下还没有任务。先调用 create_task 创建一个。"
     return f"共 {len(rows)} 个任务（新→旧）：\n" + "\n".join(rows)
 
 
-@mcp.tool()
-def set_workspace(task_id: str) -> str:
-    """【管理工具】把后续 12 个原子工具的工作区切换到 output/<task_id>（所有相对路径都以它为基准）。
-    参数 task_id 见 list_tasks 输出；传空字符串则重置为项目根目录。"""
+def set_workspace(task_id: str, ctx=None) -> str:
+    """【管理工具】把后续原子工具的工作区切换到 output/<task_id>（所有相对路径都以它为基准）。
+    切换只影响【本会话】：其他 MCP 客户端会话的工作区不受影响。
+    参数 task_id 见 list_tasks 输出；传空字符串则重置为项目根目录。
+    注意：多任务交错执行时更安全的做法是给每个原子工具显式传 task_id。"""
     task_id = (task_id or "").strip()
-    if task_id and not os.path.isdir(os.path.join(PROJECT_ROOT, "output", task_id)):
-        return f"【执行报错】任务目录 output/{task_id} 不存在，请用 list_tasks 查看任务列表。"
-    _ACTIVE_TASK["task_id"] = task_id or None
-    _apply_workspace()
     if task_id:
-        return f"工作区已切换到 output/{task_id}，后续工具将作用于该任务。"
-    return "工作区已重置为项目根目录。"
+        task_dir = _resolve_task_dir(task_id)
+        if not task_dir:
+            return (f"【执行报错】任务目录 output/{task_id} 不存在或非法"
+                    "（禁止路径分隔符与穿越），请用 list_tasks 查看任务列表。")
+        _set_current_task_id(task_id, ctx)
+        _apply_workspace(ctx)
+        return f"工作区已切换到 output/{task_id}（仅本会话），后续工具将作用于该任务。"
+    _set_current_task_id(None, ctx)
+    _apply_workspace(ctx)
+    return "本会话工作区已重置为项目根目录。"
+
+
+# 管理工具同样显式注册（ctx 注入 + schema 排除）
+_register_tool(create_task, "create_task", create_task.__doc__)
+_register_tool(list_tasks, "list_tasks", list_tasks.__doc__)
+_register_tool(set_workspace, "set_workspace", set_workspace.__doc__)
 
 
 # ==========================================
@@ -258,7 +382,7 @@ def set_workspace(task_id: str) -> str:
 # ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Rosetta-Agent MCP Server：向 Claude Desktop / Cursor 等 MCP 客户端暴露 12 个原子工具 + 3 个管理工具"
+        description="Rosetta-Agent MCP Server：向 Claude Desktop / Cursor 等 MCP 客户端暴露 16 个原子工具 + 3 个管理工具"
     )
     parser.add_argument(
         "--transport", choices=["stdio", "sse", "streamable-http"], default="stdio",
