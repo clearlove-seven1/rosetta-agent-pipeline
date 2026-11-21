@@ -68,3 +68,6 @@ rosetta_manuals/*.csv
 *.bak-*
 figures_tmp/
 chroma_db.bak-*/
+
+# 官方手册/文档仅本地使用,不入库(2026-11-21 用户决定)
+rosetta_manuals/
