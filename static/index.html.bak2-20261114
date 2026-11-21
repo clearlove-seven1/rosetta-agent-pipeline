@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rosetta Agent · 蛋白质定点突变智能计算平台</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<!-- ============ 背景层（与个人总部同款） ============ -->
+<div class="bg-fixed" aria-hidden="true">
+  <div class="aurora"><i></i><i></i><i></i></div>
+  <div class="grain"></div>
+  <div class="vignette"></div>
+</div>
+
+<!-- ============ 顶部横幅 ============ -->
+<header class="banner">
+  <div class="banner-logo" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.3">
+      <path d="M12 3l8 4.6v9L12 21l-8-4.4v-9L12 3z" stroke-linejoin="round"/>
+      <path d="M12 12l8-4.4M12 12v9M12 12L4 7.6" opacity=".7"/>
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>
+    </svg>
+  </div>
+  <div class="banner-title">
+    <strong><span class="grad">Rosetta Agent</span> · 蛋白质定点突变智能计算平台</strong>
+    <span>Intelligent Saturation Mutagenesis Platform — 配体参数化 · 复合物弛豫 · ddG 计算全自动</span>
+  </div>
+  <div class="banner-meta mono">Rosetta Suite · 多核并发 · GLM-5.3-Flash</div>
+</header>
+
+<div class="frame">
+  <!-- ============ 左侧导航 ============ -->
+  <nav class="sidenav" aria-label="平台导航">
+    <a href="#sec-home">平台首页</a>
+    <a href="#sec-pipeline">流水线说明</a>
+    <a href="#sec-output">产物说明</a>
+    <a href="#sec-faq">常见问题</a>
+    <a href="#sec-history">任务历史</a>
+    <div class="sidenav-foot">
+      <p>基于 LangGraph 智能体架构<br/>驱动 Rosetta Suite 多核计算</p>
+    </div>
+  </nav>
+
+  <!-- ============ 主内容区 ============ -->
+  <main class="content">
+
+    <!-- 平台简介 -->
+    <section class="card" id="sec-home">
+      <div class="card-head"><h2>平台首页 · 平台简介</h2></div>
+      <div class="card-body">
+        <p><strong>Rosetta Agent</strong> 是一个由大语言模型（GLM-5.3-Flash）驱动的<b>蛋白质定点突变与结合能智能计算平台</b>。平台将 LangGraph 智能体架构与 Rosetta 分子建模套件深度结合，专为高通量蛋白质工程与结构改造设计：上传蛋白复合物并指定突变位点，智能体即可严格按照<b>三段物理流水线</b>（配体参数化 → 复合物弛豫 → 饱和突变 ddG 计算）自动完成全部计算，并提供报错自动诊断修复。</p>
+        <div class="feature-grid">
+          <div class="feature"><span class="f-ico">🧪</span><b>配体自动参数化</b><p>PyMOL 自动分离配体并加氢，molfile_to_params 生成 Rosetta 参数文件，无需手工操作。</p></div>
+          <div class="feature"><span class="f-ico">🧊</span><b>笛卡尔弛豫</b><p>cartesian 弛豫多构象并发计算，自动择优作为突变模拟的初始结构。</p></div>
+          <div class="feature"><span class="f-ico">🧮</span><b>高通量饱和突变</b><p>每个位点 19 种替换自动展开，错峰多核并发执行 cartesian_ddg，ddG 结果自动汇总排序。</p></div>
+          <div class="feature"><span class="f-ico">📐</span><b>编号体系铁律</b><p>PDB 晶体学编号 → Rosetta 绝对行号由工具内部唯一转换，杜绝双重偏移错位。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 流水线说明 -->
+    <section class="card" id="sec-pipeline">
+      <div class="card-head"><h2>三段流水线说明</h2></div>
+      <div class="card-body doc">
+        <p class="doc-intro">智能体严格按以下顺序执行，任何一步失败都会触发自动诊断修复机制。用户只需提供 PDB 晶体学编号（如 <code>76</code> 或 <code>76,73</code>），编号转换在工具内部自动完成。</p>
+
+        <h3><em>Ⅰ.</em>配体参数化（parameterize_ligand）</h3>
+        <p><b>概述：</b>识别复合物中的有机配体，PyMOL 自动加氢并转换为 MOL2 格式，随后调用 Rosetta 的 molfile_to_params 脚本生成配体参数文件（.params）与参考坐标。</p>
+        <p><b>产物：</b><code>tool2_params/&lt;配体名&gt;.params</code> 与配体参考 PDB。</p>
+
+        <h3><em>Ⅱ.</em>复合物弛豫（run_cartesian_relax）</h3>
+        <p><b>概述：</b>以 ref2015_cart 打分函数对完整复合物执行笛卡尔约束弛豫（cartesian relax），多构象并发（默认 nstruct=3，可调），完成后自动按总分择优，输出 <code>wt_relaxed.pdb</code> 作为突变模拟起点。</p>
+        <p><b>产物：</b><code>tool3_relax/wt_relaxed.pdb</code>、<code>score.sc</code> 打分文件。</p>
+
+        <h3><em>Ⅲ.</em>饱和突变 ddG 计算（run_saturation_mutagenesis）</h3>
+        <p><b>概述：</b>对每个目标位点自动展开 19 种氨基酸替换，生成 mutfile 并以 cartesian_ddg 逐个计算（3 次迭代取最优），任务错峰多核并发；完成后自动解析全部 .ddg 文件，按「突变体 → 平均 ΔΔG (REU)」汇总排序——ΔΔG 越低（越负）预示突变越有利于稳定/结合。</p>
+        <p><b>产物：</b><code>tool5_summary/ddg_results.txt</code>（汇总排序表）、<code>tool4_mut_results/</code>（全部原始计算）。</p>
+
+        <p class="doc-note">💡 编号说明：平台接收【PDB 晶体学编号】（PDB 文件里的残基编号），内部唯一一次转换为 Rosetta 绝对行号；<code>get_rosetta_numbering</code> 工具可用于人工核对映射。</p>
+      </div>
+    </section>
+
+    <!-- 产物说明 -->
+    <section class="card" id="sec-output">
+      <div class="card-head"><h2>产物说明</h2></div>
+      <div class="card-body doc">
+        <div class="ana"><b>ddg_results.txt</b><p>核心结果：全部突变体的平均 ΔΔG (REU) 汇总表，按数值排序；负值提示稳定/有利突变，正值提示不利突变。</p></div>
+        <div class="ana"><b>wt_relaxed.pdb</b><p>弛豫择优后的 wild-type 复合物结构，可作为后续可视化的参照构象。</p></div>
+        <div class="ana"><b>tool4_mut_results/</b><p>每个突变体的 cartesian_ddg 原始输出（.ddg 文件、日志），保留完整计算痕迹便于核查。</p></div>
+        <div class="ana"><b>score.sc</b><p>弛豫阶段各构象的总分与分项打分，用于确认弛豫质量。</p></div>
+      </div>
+    </section>
+
+    <!-- 常见问题 -->
+    <section class="card" id="sec-faq">
+      <div class="card-head"><h2>常见问题（FAQ）</h2></div>
+      <div class="card-body doc">
+        <div class="qa"><b>Q1：蛋白里有配体但我不想单独上传？</b><p>直接只上传复合物 PDB 即可——平台会自动调用 PyMOL 分离有机配体并加氢；若结构中确实无配体，则按纯蛋白任务执行。</p></div>
+        <div class="qa"><b>Q2：突变位点怎么填？</b><p>填 PDB 晶体学编号，单位点如 <code>76</code>，多位点逗号分隔如 <code>76,73,105</code>。链不同的同号残基可用 A_76 形式区分。工具内部自动转换为 Rosetta 绝对行号，切勿自行换算。</p></div>
+        <div class="qa"><b>Q3：一次计算要多久？</b><p>弛豫阶段约数分钟至数十分钟（取决于复合物大小与并发数）；饱和突变阶段每位点 19 个替换 × 3 次迭代，默认错峰并发（并发数 10、延迟 1.5 s），可在「高级参数」中调整。</p></div>
+        <div class="qa"><b>Q4：ΔΔG 结果如何解读？</b><p>ΔΔG = 突变体最优打分 − wild-type 最优打分（REU）。显著负值（如 &lt; −2 REU）提示该突变可能稳定或有利于结合；正值提示不利。建议对候选突变再做实验验证。</p></div>
+      </div>
+    </section>
+
+    <!-- 任务历史 -->
+    <section class="card" id="sec-history">
+      <div class="card-head"><h2>任务历史</h2></div>
+      <div class="card-body">
+        <table class="hist-table">
+          <thead><tr><th>任务编号</th><th>状态</th><th>产物</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="history-body"><tr><td colspan="4" class="dim">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ 右侧栏 ============ -->
+  <aside class="rightbar">
+    <!-- 提交任务 -->
+    <section class="card" id="submit-card">
+      <div class="card-head"><h2>提交突变计算任务</h2></div>
+      <div class="card-body">
+        <form id="task-form">
+          <label class="field"><span>蛋白复合物结构 (.pdb)</span>
+            <input type="file" id="pdb-input" accept=".pdb" required/>
+            <small id="pdb-name" class="dim">未选择文件</small>
+          </label>
+          <label class="field"><span>配体文件 <small>(可选, .pdb/.mol2，不传则自动分离)</small></span>
+            <input type="file" id="ligand-input" accept=".pdb,.mol2"/>
+            <small id="ligand-name" class="dim">未选择文件</small>
+          </label>
+          <label class="field"><span>目标突变位点 <small>(PDB 晶体学编号，多位点逗号分隔)</small></span>
+            <input type="text" id="mutation" placeholder="例如: 76,73" required/></label>
+          <label class="field"><span>高级参数（可选）</span>
+            <input type="text" id="params" placeholder="例如: 并发数 48, 延迟 1.5"/></label>
+          <label class="field"><span>附加指令（可选）</span>
+            <textarea id="msg" rows="2" placeholder="例如：优先关注口袋周围 6Å 内位点"></textarea></label>
+          <button type="submit" class="btn-start" id="submit-btn"><span class="btn-label">开始突变计算</span><span class="btn-spin" aria-hidden="true"></span></button>
+          <p class="tiny-dim">弛豫与饱和突变在后台多核运行，可关闭页面稍后在历史任务中下载结果</p>
+        </form>
+      </div>
+    </section>
+
+    <!-- Agent 执行对话 -->
+    <section class="card" id="chat-card">
+      <div class="card-head chat-head">
+        <h2>Agent 执行对话</h2>
+        <span class="chat-status mono" id="chat-status">待命</span>
+      </div>
+      <div class="chat-body" id="thread">
+        <p class="chat-empty">在左侧提交任务后，智能体的每一步执行情况将在此实时显示；任务完成后可直接在下方输入框继续对话（核对编号、追加位点、重跑某一步）。</p>
+      </div>
+      <div class="composer">
+        <input type="text" id="follow-input" placeholder="任务完成后可继续对话，例如：再算一下 105 号位点" disabled/>
+        <button id="follow-btn" class="btn-send" disabled>发送</button>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<footer class="foot">Rosetta Agent · 蛋白质定点突变智能计算平台 — 仅供科研使用</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>

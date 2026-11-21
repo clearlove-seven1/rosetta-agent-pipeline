@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BioPlot · 计算生物学作图智能体</title>
+<link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/>
+      </svg>
+    </div>
+    <div class="brand-txt">
+      <h1>BioPlot</h1>
+      <p>计算生物学作图智能体 · PNG + 交互双输出</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <label class="field-inline">示例数据
+      <select id="sample-select" aria-label="选择示例数据"></select>
+    </label>
+    <button id="btn-sample" class="btn ghost">加载</button>
+    <span id="health-chip" class="chip" aria-live="polite">检测中…</span>
+  </div>
+</header>
+
+<main class="frame">
+  <aside class="side">
+    <section class="card">
+      <div class="card-head"><h2>① 数据</h2></div>
+      <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="上传 CSV 或 Excel，可拖拽">
+        <input type="file" id="file-input" accept=".csv,.tsv,.txt,.xlsx,.xlsm,.xls" hidden>
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+        <p class="dz-main"><strong>拖拽或点击上传</strong></p>
+        <p class="muted">csv / tsv / xlsx · ≤ 60MB · 自动识别分隔符与编码</p>
+      </div>
+      <div class="field">
+        <label for="ds-select">数据集</label>
+        <div class="ds-row">
+          <select id="ds-select" aria-label="选择数据集"></select>
+          <button id="btn-ds-del" class="btn icon" title="删除当前数据集" aria-label="删除当前数据集">🗑</button>
+        </div>
+      </div>
+      <div id="ds-meta" class="ds-meta muted">未加载数据</div>
+      <details id="ds-preview-wrap"><summary>数据预览</summary>
+        <div class="table-wrap"><table id="ds-table"><thead></thead><tbody></tbody></table></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>② 图类型</h2><span id="type-count" class="chip subtle"></span></div>
+      <div id="suggestions" class="sug-row" aria-label="智能推荐"></div>
+      <div id="cat-tabs" class="cat-tabs" role="tablist" aria-label="图类型分类"></div>
+      <div id="plot-list" class="plot-list" role="listbox" aria-label="图类型列表"></div>
+    </section>
+  </aside>
+
+  <section class="center" aria-label="图表预览">
+    <div id="empty-state" class="empty">
+      <div class="empty-icon" aria-hidden="true">📈</div>
+      <h2>从左侧开始</h2>
+      <p>上传表格或加载示例 → 选图类型 → 调参数 → 渲染</p>
+      <p class="muted">每张图同时产出 160dpi PNG 与可缩放、悬停看数值的交互 HTML</p>
+    </div>
+
+    <div id="preview" class="preview" hidden>
+      <div class="preview-head">
+        <div class="pv-title">
+          <h2 id="pv-title">图</h2>
+          <p id="pv-sub" class="muted"></p>
+        </div>
+        <div class="seg" role="tablist" aria-label="输出格式">
+          <button id="tab-png" class="seg-btn active" role="tab" aria-selected="true">PNG</button>
+          <button id="tab-html" class="seg-btn" role="tab" aria-selected="false">交互</button>
+        </div>
+        <div class="pv-actions">
+          <a id="dl-png" class="btn ghost" download>下载 PNG</a>
+          <a id="dl-html" class="btn ghost" download>下载 HTML</a>
+          <a id="open-new" class="btn ghost" target="_blank" rel="noopener">新窗口</a>
+        </div>
+      </div>
+      <div class="pv-stage" id="pv-stage">
+        <div class="pv-loading" id="pv-loading" hidden><span class="spinner" aria-hidden="true"></span>渲染中…</div>
+        <img id="pv-img" alt="图表 PNG 预览" hidden>
+        <iframe id="pv-frame" title="交互图表" sandbox="allow-scripts allow-popups" hidden></iframe>
+      </div>
+      <div id="insight" class="insight" hidden></div>
+      <div id="warnings" class="warn" hidden></div>
+    </div>
+
+    <div class="gallery-wrap">
+      <h3 class="muted">本次会话产物</h3>
+      <div id="gallery" class="gallery"><p class="muted g-empty">还没有渲染过图。</p></div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <section class="card">
+      <div class="card-head"><h2>③ 参数</h2></div>
+      <p id="param-type-name" class="type-name muted">未选择图类型</p>
+      <form id="param-form" class="param-form"></form>
+      <div class="field">
+        <label for="pv-input-title">自定义标题（可选）</label>
+        <input id="pv-input-title" type="text" maxlength="60" placeholder="留空则用图类型名">
+      </div>
+      <label class="check"><input type="checkbox" id="embed-js"> HTML 内嵌 plotly.js（离线可看，文件约 +3MB）</label>
+      <button id="btn-render" class="btn primary wide" type="button" disabled>
+        <span class="btn-label">渲染</span>
+      </button>
+    </section>
+  </aside>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/static/app.js?v=4"></script>
+</body>
+</html>

@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rosetta Agent · 蛋白质定点突变计算</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css?v=20"/>
+</head>
+<body>
+<!-- ============ 背景层（与个人总部同款） ============ -->
+<div class="bg-fixed" aria-hidden="true">
+  <div class="aurora"><i></i><i></i><i></i></div>
+  <div class="grain"></div>
+  <div class="vignette"></div>
+</div>
+
+<!-- ============ 顶部横幅 ============ -->
+<header class="banner">
+  <div class="banner-logo" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.3">
+      <path d="M12 3l8 4.6v9L12 21l-8-4.4v-9L12 3z" stroke-linejoin="round"/>
+      <path d="M12 12l8-4.4M12 12v9M12 12L4 7.6" opacity=".7"/>
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>
+    </svg>
+  </div>
+  <div class="banner-title">
+    <strong><span class="grad">Rosetta Agent</span> · 蛋白质定点突变计算</strong>
+    <span>上传复合物和突变位点,三段流水线算出 ddG 排行</span>
+  </div>
+  <div class="banner-meta mono">Rosetta Suite · 多核并发 · GLM-5.3-Flash</div>
+</header>
+<!-- ============ 顶部导航 ============ -->
+<nav class="topnav" aria-label="平台导航">
+  <a href="#sec-home">平台首页</a>
+  <a href="#sec-features">功能模块</a>
+  <a href="#sec-pipeline">流水线说明</a>
+  <a href="#sec-output">产物说明</a>
+  <a href="#sec-faq">常见问题</a>
+  <a href="#sec-history">任务历史</a>
+  <a href="#sec-viz">结构可视化</a>
+</nav>
+
+<div class="frame">
+  <!-- ============ 左：提交设计任务 ============ -->
+  <aside class="leftbar">
+    <!-- 提交任务 -->
+    <section class="card" id="submit-card">
+      <div class="card-head"><h2>提交突变计算任务</h2></div>
+      <div class="card-body">
+        <form id="task-form">
+          <label class="field"><span>蛋白复合物结构 (.pdb)</span>
+            <input type="file" id="pdb-input" accept=".pdb" required/>
+            <small id="pdb-name" class="dim">未选择文件</small>
+          </label>
+          <label class="field"><span>目标突变位点 <small>(PDB 晶体学编号，多位点逗号分隔)</small></span>
+            <div class="chain-row">
+              <select id="chain-sel" title="选择突变所在链">
+                <option value="">自动（不指定链）</option>
+                <option value="A">链 A</option><option value="B">链 B</option>
+                <option value="C">链 C</option><option value="D">链 D</option>
+                <option value="E">链 E</option><option value="F">链 F</option>
+                <option value="G">链 G</option><option value="H">链 H</option>
+              </select>
+              <input type="text" id="mutation" placeholder="例如: 76,73" required/>
+            </div>
+            <small class="dim">选链后自动按 "A_76" 格式提交（工具内部完成编号转换）；也可直接手写 A_76。</small>
+          </label>
+          <label class="field"><span>附加指令（可选）</span>
+            <textarea id="msg" rows="2" placeholder="例如：优先关注口袋周围 6Å 内位点"></textarea></label>
+          <details class="more-opts">
+            <summary><span class="mo-ico">⚙</span>显示更多选项<small>配体上传 · 并发 · 延迟 · 其他参数</small></summary>
+            <div class="mo-body">
+          <label class="field"><span>配体文件 <small>(可选, .pdb/.mol2，不传则自动分离)</small></span>
+            <input type="file" id="ligand-input" accept=".pdb,.mol2"/>
+            <small id="ligand-name" class="dim">未选择文件</small>
+          </label>
+          <label class="field"><span>并发数 <small id="jobs-hint" class="dim">查询服务器中…</small></span>
+            <input type="number" id="jobs" min="1" step="1" placeholder="10"/></label>
+          <label class="field"><span>延迟（秒） <small class="dim">每个突变计算提交后的错峰间隔，防止 位点×19 个进程瞬时拉起，默认 1.5s</small></span>
+            <input type="number" id="delay" min="0" step="0.5" placeholder="1.5"/></label>
+          <label class="field"><span>其他参数/要求 <small>(可选)</small></span>
+            <input type="text" id="params" placeholder="例如: 优先关注口袋周围位点"/></label>
+            </div>
+          </details>
+          <button type="submit" class="btn-start" id="submit-btn"><span class="btn-label">开始突变计算</span><span class="btn-spin" aria-hidden="true"></span></button>
+          <p class="tiny-dim">弛豫与饱和突变在后台多核运行，可关闭页面稍后在历史任务中下载结果</p>
+        </form>
+      </div>
+    </section>
+
+
+  </aside>
+
+  <!-- ============ 主内容区 ============ -->
+  <main class="content">
+
+
+    <!-- 平台简介 -->
+    <section class="card" id="sec-home">
+      <div class="card-head"><h2>平台首页 · 平台简介</h2></div>
+      <div class="card-body">
+        <p><strong>Rosetta Agent</strong> 由大语言模型（GLM-5.3-Flash）加 LangGraph 驱动，调用 Rosetta 分子建模套件，做高通量蛋白质工程里的定点突变与结合能计算：上传蛋白复合物、指定突变位点，智能体按<b>三段流水线</b>（配体参数化 → 复合物弛豫 → 饱和突变 ddG 计算）跑完全部计算，报错时自动诊断并重试。</p>
+        <div class="flow-strip">
+          <div class="flow-step">
+            <span class="fs-no">Ⅰ</span>
+            <div class="fs-body">
+              <b>配体参数化</b>
+              <code>parameterize_ligand</code>
+              <p>PyMOL 分离配体并加氢，molfile_to_params 生成 .params</p>
+            </div>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-step">
+            <span class="fs-no">Ⅱ</span>
+            <div class="fs-body">
+              <b>复合物弛豫</b>
+              <code>run_cartesian_relax</code>
+              <p>ref2015_cart 多构象并发，择优出 wt_relaxed.pdb</p>
+            </div>
+          </div>
+          <div class="flow-arrow" aria-hidden="true">→</div>
+          <div class="flow-step">
+            <span class="fs-no">Ⅲ</span>
+            <div class="fs-body">
+              <b>饱和突变 ddG</b>
+              <code>run_saturation_mutagenesis</code>
+              <p>每位点 19 替换 × 3 迭代，错峰多核，自动汇总排序</p>
+            </div>
+          </div>
+        </div>
+        <p class="flow-note"><b>编号规范</b>　全程使用 PDB 晶体学编号，Rosetta 绝对行号由工具内部只转换一次，避免双重偏移。</p>
+      </div>
+    </section>
+
+    <!-- 功能模块 -->
+    <section class="card" id="sec-features">
+      <div class="card-head"><h2>Rosetta 功能模块 <small style="font-weight:400;color:var(--ink-3)">一个按钮对应一个功能，各自独立页面</small></h2></div>
+      <div class="card-body">
+        <div class="feat-grid">
+          <a class="feat-btn" href="/static/features/ligand-docking.html"><span class="fb-ico">🧪</span><span class="fb-name">配体对接</span><span class="fb-en">Ligand Docking</span></a>
+          <a class="feat-btn" href="/static/features/protein-docking.html"><span class="fb-ico">🔗</span><span class="fb-name">蛋白-蛋白对接</span><span class="fb-en">RosettaDock</span></a>
+          <a class="feat-btn" href="/static/features/protein-design.html"><span class="fb-ico">🎨</span><span class="fb-name">蛋白设计</span><span class="fb-en">fixbb · 酶设计 · 超电荷</span></a>
+          <a class="feat-btn" href="/static/features/loop-modeling.html"><span class="fb-ico">🔄</span><span class="fb-name">环区建模</span><span class="fb-en">KIC · NGK</span></a>
+          <a class="feat-btn" href="/static/features/membrane.html"><span class="fb-ico">🫧</span><span class="fb-name">膜蛋白</span><span class="fb-en">RosettaMP</span></a>
+          <a class="feat-btn" href="/static/features/antibody.html"><span class="fb-ico">🛡️</span><span class="fb-name">抗体建模</span><span class="fb-en">RosettaAntibody</span></a>
+          <a class="feat-btn" href="/static/features/rna-glycan.html"><span class="fb-ico">🧬</span><span class="fb-name">RNA / 糖类建模</span><span class="fb-en">FARFAR2 · GlycanRelax</span></a>
+          <a class="feat-btn" href="/static/features/structure-prediction.html"><span class="fb-ico">🔮</span><span class="fb-name">结构预测</span><span class="fb-en">ab initio · RosettaCM · trRosetta</span></a>
+        </div>
+        <p class="tiny-dim">以上各功能页为官方文档索引（应用用途摘自 docs.rosettacommons.org 原文），点击进入查看该功能相关的 Rosetta 应用与官方文档入口。</p>
+      </div>
+    </section>
+
+    <!-- 流水线说明 -->
+    <section class="card" id="sec-pipeline">
+      <div class="card-head"><h2>三段流水线说明</h2></div>
+      <div class="card-body doc">
+        <p class="doc-intro">智能体严格按以下顺序执行，任何一步失败都会触发自动诊断修复机制。用户只需提供 PDB 晶体学编号（如 <code>76</code> 或 <code>76,73</code>），编号转换在工具内部自动完成。</p>
+
+        <h3><em>Ⅰ.</em>配体参数化（parameterize_ligand）</h3>
+        <p><b>概述：</b>识别复合物中的有机配体，PyMOL 自动加氢并转换为 MOL2 格式，随后调用 Rosetta 的 molfile_to_params 脚本生成配体参数文件（.params）与参考坐标。</p>
+        <p><b>产物：</b><code>parameterize_ligand/&lt;配体名&gt;.params</code> 与配体参考 PDB。</p>
+
+        <h3><em>Ⅱ.</em>复合物弛豫（run_cartesian_relax）</h3>
+        <p><b>概述：</b>以 ref2015_cart 打分函数对完整复合物执行笛卡尔约束弛豫（cartesian relax），多构象并发（默认 nstruct=3，可调），完成后自动按总分择优，输出 <code>wt_relaxed.pdb</code> 作为突变模拟的初始结构。</p>
+        <p><b>产物：</b><code>cartesian_relax/wt_relaxed.pdb</code>、<code>score.sc</code> 打分文件。</p>
+
+        <h3><em>Ⅲ.</em>饱和突变 ddG 计算（run_saturation_mutagenesis）</h3>
+        <p><b>概述：</b>对每个目标位点自动展开 19 种氨基酸替换，生成 mutfile 并以 cartesian_ddg 逐个计算（3 次迭代取最优），任务错峰多核并发；完成后自动解析全部 .ddg 文件，按「突变体 → ΔΔG (REU)」汇总排序。ΔΔG = 突变体最优打分 − wild-type 最优打分（各取 3 次迭代的最小值），不是平均值。</p>
+        <p><b>产物：</b><code>summary/ddg_results.txt</code>（汇总排序表）、<code>saturation_mutagenesis/</code>（全部原始计算）。</p>
+
+        <p class="doc-note">编号说明：平台接收【PDB 晶体学编号】（PDB 文件里的残基编号），内部一次转换为 Rosetta 绝对行号；<code>get_rosetta_numbering</code> 工具可用于人工核对映射。</p>
+      </div>
+    </section>
+
+    <!-- 产物说明 -->
+    <section class="card" id="sec-output">
+      <div class="card-head"><h2>产物说明</h2></div>
+      <div class="card-body doc">
+        <div class="ana"><b>ddg_results.txt</b><p>核心结果：全部突变体的 ΔΔG (REU) 汇总表（突变体最优打分 − WT 最优打分，各取 3 次迭代最小值），按数值排序；负值提示对稳定性可能有利的候选突变，正值提示不利。</p></div>
+        <div class="ana"><b>wt_relaxed.pdb</b><p>弛豫择优后的 wild-type 复合物结构，可作为后续可视化的参照构象。</p></div>
+        <div class="ana"><b>saturation_mutagenesis/</b><p>每个突变体的 cartesian_ddg 原始输出（.ddg 文件、日志），保留完整计算痕迹便于核查。</p></div>
+        <div class="ana"><b>score.sc</b><p>弛豫阶段各构象的总分与分项打分，用于确认弛豫质量。</p></div>
+      </div>
+    </section>
+
+    <!-- 常见问题 -->
+    <section class="card" id="sec-faq">
+      <div class="card-head"><h2>常见问题（FAQ）</h2></div>
+      <div class="card-body doc">
+        <div class="qa"><b>Q1：蛋白里有配体但我不想单独上传？</b><p>直接只上传复合物 PDB 即可——平台会自动调用 PyMOL 分离有机配体并加氢；若结构中确实无配体，则按纯蛋白任务执行。</p></div>
+        <div class="qa"><b>Q2：突变位点怎么填？</b><p>填 PDB 晶体学编号，单位点如 <code>76</code>，多位点逗号分隔如 <code>76,73,105</code>。链不同的同号残基可用 A_76 形式区分。工具内部自动转换为 Rosetta 绝对行号，切勿自行换算。</p></div>
+        <div class="qa"><b>Q3：一次计算要多久？</b><p>弛豫阶段约数分钟至数十分钟（取决于复合物大小与并发数）；饱和突变阶段每位点 19 个替换 × 3 次迭代，默认错峰并发（并发数 10、延迟 1.5 s），可在「高级参数」中调整。</p></div>
+        <div class="qa"><b>Q4：ΔΔG 结果如何解读？</b><p>ΔΔG = 突变体最优打分 − wild-type 最优打分（REU）。显著负值（如 &lt; −2 REU）提示该突变可能稳定或有利于结合；正值提示不利。建议对候选突变再做实验验证。</p></div>
+      </div>
+    </section>
+
+    <!-- 任务历史 -->
+    <section class="card" id="sec-history">
+      <div class="card-head"><h2>任务历史</h2></div>
+      <div class="card-body">
+        <table class="hist-table">
+          <thead><tr><th>任务编号</th><th>状态</th><th>产物</th><th style="text-align:right">操作</th></tr></thead>
+          <tbody id="history-body"><tr><td colspan="4" class="dim">加载中…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+    <!-- 结构可视化：交互式 3D 工作台 + PyMOL 发表图 -->
+    <section class="card" id="viz-card">
+      <div class="card-head chat-head">
+        <h2>结构可视化 <small style="font-weight:400;color:var(--ink-3)">交互式 3D 工作台 + 发表图</small></h2>
+        <span class="chat-status mono" id="viz-status">待命</span>
+      </div>
+      <div class="card-body">
+        <div class="viz-row">
+          <select id="viz-source" title="结构来源：左侧表单文件或历史任务">
+            <option value="">表单文件（左侧选择的 PDB）</option>
+          </select>
+          <select id="viz-file" title="项目内任意 PDB（任务工作区 / inputs）">
+            <option value="">项目内 PDB…</option>
+          </select>
+          <button type="button" id="viz-open" class="btn-cancel" title="打开本地 PDB 文件">📂 打开</button>
+          <input type="file" id="viz-local" accept=".pdb" hidden/>
+        </div>
+        <div class="viz-row">
+          <select id="viz-rep" title="表示方法">
+            <option value="cartoon">飘带 cartoon</option>
+            <option value="ball-and-stick">棍棒 ball&amp;stick</option>
+            <option value="spacefill">球填充 spacefill</option>
+            <option value="molecular-surface">分子表面 surface</option>
+            <option value="gaussian-surface">高斯表面 soft surface</option>
+            <option value="putty">条带宽度 putty</option>
+          </select>
+          <select id="viz-color" title="配色">
+            <option value="chain" selected>按链配色</option>
+            <option value="ss">二级结构配色（PyMOL）</option>
+            <option value="spectrum">彩虹渐变</option>
+            <option value="byelement">按元素配色</option>
+            <option value="teal">单色青</option>
+          </select>
+          <select id="viz-chain" title="位点所在链">
+            <option value="">链:自动</option>
+            <option value="A">A</option><option value="B">B</option><option value="C">C</option>
+            <option value="D">D</option><option value="E">E</option><option value="F">F</option>
+            <option value="G">G</option><option value="H">H</option>
+          </select>
+          <input type="text" id="viz-resi" placeholder="残基号，如 76" style="max-width:130px"/>
+          <button type="button" id="viz-btn" class="btn-send">定位</button>
+          <button type="button" id="viz-clear" class="btn-cancel">复位</button>
+        </div>
+        <div class="viz-row">
+          <button type="button" id="viz-t-w" class="btn-cancel viz-toggle">水:显</button>
+          <button type="button" id="viz-t-l" class="btn-cancel viz-toggle">配体:显</button>
+          <button type="button" id="viz-t-c" class="btn-cancel viz-toggle">糖:显</button>
+          <button type="button" id="viz-spin" class="btn-cancel">自旋</button>
+          <button type="button" id="viz-bg" class="btn-cancel" title="切换画布背景">背景:暗</button>
+          <button type="button" id="viz-fs" class="btn-cancel">⛶ 全屏工作台</button>
+          <button type="button" id="viz-ray" class="btn-cancel">PyMOL 发表图</button>
+          <button type="button" id="viz-png" class="btn-cancel">存图</button>
+        </div>
+        <div class="viz-canvas-wrap">
+          <div id="viz-canvas" class="viz-canvas"></div>
+          <div class="viz-empty" id="viz-empty">选好来源后自动加载 Mol* 彩色交互 3D（RCSB 同款引擎）：左键拖动=旋转 · 右键拖动=平移 · Ctrl+滚轮=缩放（普通滚轮=滚动页面）· 点击残基=聚焦并显示周围 5Å 相互作用 · 底部命令行支持 Mol* 命令</div>
+          <div class="viz-pick mono" id="viz-pick" hidden></div>
+        </div>
+        <div class="viz-console">
+          <span class="vc-ps1">PyMOL&gt;</span>
+          <input type="text" id="viz-cmd" class="mono" spellcheck="false" autocomplete="off"
+                 placeholder="show surface · color spectrum · zoom resi 76 · interactions 60 · preset pretty（多条用 ; 分隔，↑↓ 翻历史）"/>
+          <button type="button" id="viz-cmd-go" class="btn-send">执行</button>
+        </div>
+        <details class="more-opts viz-help">
+          <summary><span class="mo-ico">⌨</span>Mol* 命令速查<small>show/hide · color · zoom · interactions · preset…</small></summary>
+          <div class="mo-body mono">表示：show cartoon|sticks|spheres|surface|putty　hide water|ligand|carbs|everything
+配色：color spectrum|chain|ss|byelement|red|teal…　color red resi 76（单残基）
+视角：zoom [resi 76 [chain A]]　center resi 76　orient　reset　spin on|off　bg white|black|gray
+工具：interactions 60（显示残基 60 周围非共价相互作用）
+样式：preset pretty|surface|ball_stick|spacefill|illustrative(素描风)　style flat|pretty　water on|off　ligand on|off　背景按钮=暗/白切换
+滚轮：普通滚轮滚动页面，Ctrl/⌘+滚轮缩放结构（触控板捏合可直接缩放）
+测距/加标签/选择原子：用右侧 Structure Tools 面板（Measurements 区）
+鼠标：左键=旋转 · 右键=平移 · 点击残基=聚焦+周围 5Å 球棍
+示例：color spectrum; zoom resi 76; interactions 60; preset surface</div>
+        </details>
+        <div id="viz-ray-out" hidden>
+          <img id="viz-ray-img" class="chat-img" alt="PyMOL 发表级渲染"/>
+          <a id="viz-ray-dl" class="tiny-dim" download="pymol_render.png">⬇ 下载发表图 PNG</a>
+        </div>
+        <p class="tiny-dim">交互视图由 Mol* 实时渲染（RCSB/PDBe 同款引擎）：旋转/平移/缩放、点击残基聚焦并显示周围 5Å 相互作用、悬停提示、原子测距、Mol* 命令行、全屏工作台，彩色多方案；「PyMOL 发表图」调用服务器光追渲染，出静态高清图可下载。</p>
+      </div>
+    </section>
+  </main>
+  <!-- ============ 右：Agent 对话 ============ -->
+  <aside class="rightbar">
+    <!-- Agent 执行对话 -->
+    <section class="card" id="chat-card">
+      <div class="card-head chat-head">
+        <h2>Agent 执行对话</h2>
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="chat-status mono" id="chat-status">待命</span>
+          <button type="button" id="chat-close" class="chat-x" title="收起对话侧边栏">✕</button>
+        </span>
+      </div>
+      <div class="pipeline-progress" id="pp" hidden>
+        <div class="pp-step" id="pp-p1"><span class="pp-name">配体参数化</span><div class="pp-bar"><i></i></div><span class="pp-detail">未开始</span></div>
+        <div class="pp-step" id="pp-p2"><span class="pp-name">复合物弛豫</span><div class="pp-bar"><i></i></div><span class="pp-detail">未开始</span></div>
+        <div class="pp-step" id="pp-p3"><span class="pp-name">饱和突变</span><div class="pp-bar"><i></i></div><span class="pp-detail">未开始</span></div>
+      </div>
+      <div class="chat-body" id="thread">
+        <p class="chat-empty">在左侧提交任务后，智能体的每一步执行情况将在此实时显示；也可不填任务直接在下方对话（如「跑一个突变」），智能体会逐项问清关键参数后由你确认执行。</p>
+      </div>
+      <div class="composer">
+        <input type="text" id="follow-input" placeholder="对智能体说点什么：无任务时=对话创建任务；任务完成后=继续对话"/>
+        <button id="follow-btn" class="btn-send">发送</button>
+      </div>
+    </section>
+
+  </aside>
+</div>
+
+<!-- 对话抽屉的右缘标签钮（默认页面不带 chat-open，侧边栏收起） -->
+<button type="button" id="chat-dock" class="chat-dock" title="调出 / 收起智能体对话">
+  <span class="cd-dot" aria-hidden="true"></span>
+  <span class="cd-ico" aria-hidden="true">💬</span>
+  <span class="cd-txt">对话</span>
+</button>
+
+<footer class="foot">Rosetta Agent · 蛋白质定点突变计算 · 仅供科研使用</footer>
+
+<link rel="stylesheet" type="text/css" href="/static/vendor/pdbe-molstar.css"/>
+<script type="text/javascript" src="/static/vendor/pdbe-molstar-plugin.js"></script>
+<script type="text/javascript" src="/static/app.js?v=14"></script>
+<script src="/static/tab-fill.js?v=3"></script>
+<script src="/static/status-badge.js?v=2" data-src="/api/host/status" data-kind="cpu"></script>
+</body>
+</html>

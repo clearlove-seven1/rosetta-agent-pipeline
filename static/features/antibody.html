@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>抗体建模 · Antibody Modeling（RosettaAntibody） — Rosetta Agent 功能模块</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css?v=13"/>
+
+<style>
+body{overflow:auto;height:auto;min-height:100vh}
+.feat-wrap{position:relative;z-index:2;max-width:980px;margin:0 auto;padding:26px 20px 60px}
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--ink-2);text-decoration:none;font-size:14px;margin-bottom:20px;transition:.2s;border:1px solid var(--line-2);border-radius:999px;padding:6px 16px}
+.back:hover{color:var(--ink);border-color:rgba(66,226,208,.55);background:rgba(66,226,208,.08)}
+.feat-hero{margin-bottom:24px}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--cyan);background:rgba(66,226,208,.1);border:1px solid rgba(66,226,208,.28);border-radius:6px;padding:2px 9px;margin-bottom:14px}
+.feat-hero h1{font-size:29px;margin:8px 0 6px;font-weight:700;letter-spacing:.01em}
+.feat-hero h1 .grad{background:linear-gradient(120deg,var(--blue),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+.feat-hero .en{color:var(--ink-3);font-weight:400;font-size:18px}
+.feat-hero .intro{color:var(--ink-2);font-size:15px;line-height:1.8;max-width:840px;margin:12px 0 0}
+.feat-card{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);backdrop-filter:blur(14px);margin-bottom:18px;overflow:hidden}
+.feat-card .fc-head{padding:14px 20px;border-bottom:1px solid var(--line);font-size:16px;font-weight:700}
+.feat-card .fc-body{padding:10px 20px}
+.app{display:flex;gap:14px;padding:16px 4px;border-bottom:1px solid var(--line)}
+.app:last-child{border-bottom:none}
+.app .num{font-family:var(--mono);color:var(--ink-3);font-size:13px;min-width:26px;padding-top:2px}
+.app .info{flex:1}
+.app .info .nm{font-weight:600;font-size:15px}
+.app .info .ds{color:var(--ink-2);font-size:13.5px;line-height:1.7;margin-top:5px}
+.app a{color:var(--blue);text-decoration:none;font-size:13px;white-space:nowrap;align-self:center;border:1px solid var(--line-2);border-radius:999px;padding:5px 13px;transition:.2s}
+.app a:hover{border-color:rgba(91,140,255,.55);background:rgba(91,140,255,.1);color:var(--ink)}
+.foot{position:relative;z-index:2;text-align:center;color:var(--ink-3);font-size:12px;padding:20px;border-top:1px solid var(--line)}
+.foot a{color:var(--ink-2);text-decoration:none}
+</style>
+
+</head>
+<body>
+<div class="bg-fixed" aria-hidden="true">
+  <div class="aurora"><i></i><i></i><i></i></div>
+  <div class="grain"></div>
+  <div class="vignette"></div>
+</div>
+<div class="feat-wrap">
+  <a class="back" href="/">← 返回平台首页</a>
+  <div class="feat-hero">
+    <span class="tag">RosettaAntibody3 · SnugDock · AntibodyDesign</span>
+    <h1><span class="grad">抗体建模</span> <span class="en">Antibody Modeling（RosettaAntibody）</span></h1>
+    <p class="intro">RosettaAntibody3 是抗体结构与设计协议：移植 CDR 环、重建 CDR H3 环、VL-VH 对接；SnugDock 做抗体-抗原对接；RosettaAntibodyDesign 做抗体序列设计。</p>
+  </div>
+  <section class="feat-card">
+    <div class="fc-head">相关 Rosetta 应用</div>
+    <div class="fc-body"><div class="app"><span class="num">01</span><div class="info"><div class="nm">RosettaAntibody3 协议</div><div class="ds"><span class="official">Please realize this the overview is to speed you up to run the protocol asap with minimum knowledge. For details of each steps, please check: RosettaAntibody3 application: Antibody Homology Modeling RosettaAntibody3 application: Antibody Modeler Protocol (CDR H3 and VL-VH) Rosett</span></div></div><a href="/docs/latest/application_documentation/antibody/antibody-protocol" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">02</span><div class="info"><div class="nm">CDR H3 环建模</div><div class="ds"><span class="official">Determine the structure of antibody homology models by combining VL-VH docking (using docking protocol) and H3 loop modeling (loop modeling protocol ).</span></div></div><a href="/docs/latest/application_documentation/antibody/antibody-model-CDR-H3" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">03</span><div class="info"><div class="nm">CDR 环移植</div><div class="ds"><span class="official">Graft antibody CDR templates on the framework template to create a rough antibody model.</span></div></div><a href="/docs/latest/application_documentation/antibody/antibody-assemble-CDRs" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">04</span><div class="info"><div class="nm">SnugDock（抗体-抗原对接）</div><div class="ds"><span class="official">The above paper describes the SnugDock method, but flags have evolved with time. To run SnugDock, it is necessary to input a PDB-formatted file with an antibody (light chain labelled as L and heavy chain labelled as H) and an antigen (labelled as anything you want, I use A). The </span></div></div><a href="/docs/latest/application_documentation/antibody/snugdock" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">05</span><div class="info"><div class="nm">RosettaAntibodyDesign（抗体设计）</div><div class="ds"><span class="official">RosettaAntibodyDesign (RAbD) is a generalized framework for the design of antibodies, in which a user can easily tailor the run to their project needs. The algorithm is meant to sample the diverse sequence, structure, and binding space of an antibody-antigen complex. It can be us</span></div></div><a href="/docs/latest/application_documentation/antibody/RosettaAntibodyDesign" target="_blank" rel="noopener">官方文档 ↗</a></div></div>
+  </section>
+  <p style="color:var(--ink-3);font-size:12.5px;line-height:1.7">说明：「应用用途」摘自 Rosetta 官方文档（docs.rosettacommons.org）各应用的 Application purpose / Overview 章节，点击「官方文档」查看原文。本页为能力与文档索引；具体计算任务仍在平台首页的「突变计算」流程中执行。</p>
+</div>
+<footer class="foot">Rosetta Agent · 蛋白质定点突变智能计算平台 — 功能模块 · 文档依据 <a href="https://docs.rosettacommons.org" target="_blank" rel="noopener">Rosetta 官方文档</a></footer>
+</body>
+</html>

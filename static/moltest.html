@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>Mol* 嵌入测试</title>
+<link rel="stylesheet" type="text/css" href="/static/vendor/pdbe-molstar-light.css"/>
+<style>body{margin:0}#app{position:relative;width:100vw;height:100vh}</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="text/javascript" src="/static/vendor/pdbe-molstar-plugin.js"></script>
+<script>
+const opts = {
+  customData: { url: '/api/viewer/pdb?path=inputs/pdbs/best_relaxed_95950.pdb', format: 'pdb' },
+  bgColor: 'white',
+  lighting: 'matte',
+  landscape: true,
+  hideCanvasControls: ['expand'],
+  sequencePanel: true,
+  selectInteraction: true,
+};
+const viewerInstance = new PDBeMolstarPlugin();
+viewerInstance.render(document.getElementById('app'), opts);
+viewerInstance.events.loadComplete.subscribe(() => {
+  window.__loaded = true;
+  window.vi = viewerInstance;
+});
+document.addEventListener('PDB.molstar.click', (e) => {
+  window.__lastClick = (e.value && e.value.eventData) || e.eventData || e.value || 'unknown';
+});
+document.addEventListener('PDB.molstar.mouseover', (e) => {
+  window.__lastHover = (e.value && e.value.eventData) || e.eventData || e.value || 'unknown';
+});
+</script>
+</body>
+</html>

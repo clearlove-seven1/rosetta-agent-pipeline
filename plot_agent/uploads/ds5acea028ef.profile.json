@@ -1,0 +1,1 @@
+{"n_rows": 950, "n_cols": 2, "columns": [{"name": "突变\tΔΔG(REU", "missing": 0, "n_unique": 950, "sample": ["D_A4_Q\t-1.5510", "D_A4_S\t-0.8840", "D_A4_P\t-0.6170"], "dtype": "text"}, {"name": " min(MUT)-min(WT))", "missing": 950, "n_unique": 0, "sample": [], "dtype": "categorical"}], "suggestions": [{"type": "bar", "score": 0.42, "reason": "分类列计数/聚合柱状图"}]}

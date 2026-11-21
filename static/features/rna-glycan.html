@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>RNA 与糖类建模 · RNA &amp; Glycan Modeling — Rosetta Agent 功能模块</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css?v=13"/>
+
+<style>
+body{overflow:auto;height:auto;min-height:100vh}
+.feat-wrap{position:relative;z-index:2;max-width:980px;margin:0 auto;padding:26px 20px 60px}
+.back{display:inline-flex;align-items:center;gap:6px;color:var(--ink-2);text-decoration:none;font-size:14px;margin-bottom:20px;transition:.2s;border:1px solid var(--line-2);border-radius:999px;padding:6px 16px}
+.back:hover{color:var(--ink);border-color:rgba(66,226,208,.55);background:rgba(66,226,208,.08)}
+.feat-hero{margin-bottom:24px}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--cyan);background:rgba(66,226,208,.1);border:1px solid rgba(66,226,208,.28);border-radius:6px;padding:2px 9px;margin-bottom:14px}
+.feat-hero h1{font-size:29px;margin:8px 0 6px;font-weight:700;letter-spacing:.01em}
+.feat-hero h1 .grad{background:linear-gradient(120deg,var(--blue),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent}
+.feat-hero .en{color:var(--ink-3);font-weight:400;font-size:18px}
+.feat-hero .intro{color:var(--ink-2);font-size:15px;line-height:1.8;max-width:840px;margin:12px 0 0}
+.feat-card{background:var(--glass);border:1px solid var(--line);border-radius:var(--r);backdrop-filter:blur(14px);margin-bottom:18px;overflow:hidden}
+.feat-card .fc-head{padding:14px 20px;border-bottom:1px solid var(--line);font-size:16px;font-weight:700}
+.feat-card .fc-body{padding:10px 20px}
+.app{display:flex;gap:14px;padding:16px 4px;border-bottom:1px solid var(--line)}
+.app:last-child{border-bottom:none}
+.app .num{font-family:var(--mono);color:var(--ink-3);font-size:13px;min-width:26px;padding-top:2px}
+.app .info{flex:1}
+.app .info .nm{font-weight:600;font-size:15px}
+.app .info .ds{color:var(--ink-2);font-size:13.5px;line-height:1.7;margin-top:5px}
+.app a{color:var(--blue);text-decoration:none;font-size:13px;white-space:nowrap;align-self:center;border:1px solid var(--line-2);border-radius:999px;padding:5px 13px;transition:.2s}
+.app a:hover{border-color:rgba(91,140,255,.55);background:rgba(91,140,255,.1);color:var(--ink)}
+.foot{position:relative;z-index:2;text-align:center;color:var(--ink-3);font-size:12px;padding:20px;border-top:1px solid var(--line)}
+.foot a{color:var(--ink-2);text-decoration:none}
+</style>
+
+</head>
+<body>
+<div class="bg-fixed" aria-hidden="true">
+  <div class="aurora"><i></i><i></i><i></i></div>
+  <div class="grain"></div>
+  <div class="vignette"></div>
+</div>
+<div class="feat-wrap">
+  <a class="back" href="/">← 返回平台首页</a>
+  <div class="feat-hero">
+    <span class="tag">FARFAR2 · ERRASER · GlycanRelax</span>
+    <h1><span class="grad">RNA 与糖类建模</span> <span class="en">RNA &amp; Glycan Modeling</span></h1>
+    <p class="intro">RNA 三维结构预测（片段装配 FARFAR、一步预测 FARFAR2）、晶体学精修（ERRASER）；糖类（碳水化合物）的建模与弛豫（GlycanRelax）。</p>
+  </div>
+  <section class="feat-card">
+    <div class="fc-head">相关 Rosetta 应用</div>
+    <div class="fc-body"><div class="app"><span class="num">01</span><div class="info"><div class="nm">RNA de novo 结构预测</div><div class="ds"><span class="official">This code allows build-up of three-dimensional de novo models of RNAs of sizes up to 300 nts, given secondary structure and experimental constraints. It can be carried out reasonably automatically, but human curation of submodels along the build-up path may improve accuracy. A fu</span></div></div><a href="/docs/latest/application_documentation/rna/rna-denovo-setup" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">02</span><div class="info"><div class="nm">FARFAR2（一步 RNA 预测）</div><div class="ds"><span class="official">To produce de novo models of RNA structures up to around 250nt, or homology models of RNA structures where up to about 80 nt are not in known templates or A-form helices, through a parameter-optimized version of Fragment Assembly of RNA with Full Atom Refinement (FARFAR), which w</span></div></div><a href="/docs/latest/FARFAR2" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">03</span><div class="info"><div class="nm">ERRASER（RNA 精修）</div><div class="ds"><span class="official">This code is used for improving a given RNA crystallographic model and reduce the number of potential errors in the model (which can evaluated by Molprobity), under the constraint of experimental electron density map.</span></div></div><a href="/docs/latest/application_documentation/rna/erraser" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">04</span><div class="info"><div class="nm">RNA 设计</div><div class="ds"><span class="official">This code is intended to carry out fixed backbone design of RNA sequences given an input backbone.</span></div></div><a href="/docs/latest/application_documentation/rna/rna-design" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">05</span><div class="info"><div class="nm">糖类建模（Glycans）</div><div class="ds"><span class="official">糖类/糖基化体系的建模指南。</span></div></div><a href="/docs/latest/application_documentation/carbohydrates/WorkingWithGlycans" target="_blank" rel="noopener">官方文档 ↗</a></div><div class="app"><span class="num">06</span><div class="info"><div class="nm">GlycanRelax</div><div class="ds"><span class="official">糖树建模与弛豫。</span></div></div><a href="/docs/latest/application_documentation/carbohydrates/GlycanRelax" target="_blank" rel="noopener">官方文档 ↗</a></div></div>
+  </section>
+  <p style="color:var(--ink-3);font-size:12.5px;line-height:1.7">说明：「应用用途」摘自 Rosetta 官方文档（docs.rosettacommons.org）各应用的 Application purpose / Overview 章节，点击「官方文档」查看原文。本页为能力与文档索引；具体计算任务仍在平台首页的「突变计算」流程中执行。</p>
+</div>
+<footer class="foot">Rosetta Agent · 蛋白质定点突变智能计算平台 — 功能模块 · 文档依据 <a href="https://docs.rosettacommons.org" target="_blank" rel="noopener">Rosetta 官方文档</a></footer>
+</body>
+</html>

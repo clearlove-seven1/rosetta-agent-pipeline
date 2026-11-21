@@ -62,3 +62,9 @@ rosetta_manuals/*.csv
 # Workbench exceptions (v0.2): 测试套件与小型示例结构（wwPDB 数据允许署名再分发）
 !tests/**/*.py
 !examples/**/*.pdb
+
+# 运行日志与本地备份(2026-11-21)
+*.log
+*.bak-*
+figures_tmp/
+chroma_db.bak-*/
