@@ -126,6 +126,9 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_INTERRUPTED = "interrupted"
+# 部分成功：预期计算部分完成（如 15/19 个突变成功，其余失败）。
+# 仅在 manifest.mutations_planned 已知时判定；未知（旧任务/旧测试夹具）保持旧语义。
+STATUS_PARTIAL = "partial"
 
 STATE_FILENAME = "task_status.json"
 
@@ -262,6 +265,12 @@ def state_effective(task_dir: str, base: str = OUTPUT_BASE) -> dict:
                 return {"status": STATUS_FAILED,
                         "note": (note + "；" if note else "")
                                 + "runner 已退出，汇总存在但 0 个成功突变（空壳结果，不视为成功）",
+                        "state": state}
+            planned = (state.get("manifest") or {}).get("mutations_planned")
+            if planned and n_ddg < planned:
+                return {"status": STATUS_PARTIAL,
+                        "note": (note + "；" if note else "")
+                                + f"runner 进程已退出，部分成功：{n_ddg}/{planned} 个突变结果在位（失败项查看 mut_*.log 末尾 [exit code]）",
                         "state": state}
             return {"status": STATUS_COMPLETED,
                     "note": (note + "；" if note else "") + f"runner 进程已退出，{n_ddg} 个突变结果在位",
@@ -592,6 +601,12 @@ def settle_task_after_stream(task_dir: str, had_error: bool = False,
     summary = os.path.join(task_dir, "summary", "ddg_results.txt")
     n_ddg = _ddg_count(task_dir)
     if os.path.exists(summary) and n_ddg > 0:
+        planned = (state.get("manifest") or {}).get("mutations_planned")
+        if planned and n_ddg < planned:
+            state_write(task_dir, status=STATUS_PARTIAL, stage=state.get("stage") or "mutagenesis",
+                        status_note=f"Agent 流结束：部分成功（{n_ddg}/{planned} 个突变结果；失败项查看 mut_*.log）",
+                        artifacts={"ddg_results": "summary/ddg_results.txt"})
+            return STATUS_PARTIAL
         state_write(task_dir, status=STATUS_COMPLETED, stage=state.get("stage") or "mutagenesis",
                     status_note=f"Agent 流结束：汇总产物在位（{n_ddg} 个突变结果）",
                     artifacts={"ddg_results": "summary/ddg_results.txt"})
@@ -630,3 +645,62 @@ def set_manifest(task_dir: str, **fields) -> None:
     manifest = state.get("manifest") or {}
     manifest.update(fields)
     state_write(task_dir, manifest=manifest)
+
+
+# ==========================================
+# 5. 下游对接契约 pdw-task-v0.1（阶段 3）
+# ==========================================
+# 契约文本见 TASK-CONTRACT-v0.1.md；这里是可执行校验器：
+# 下游执行器消费任务前调用 contract_check，ok=False 必须拒绝并出示 missing，
+# 不得猜测补齐（总规划 §3.5"缺少必要信息时明确报错"）。
+CONTRACT_VERSION = "pdw-task-v0.1"
+_CONTRACT_REQUIRED = [
+    "input_structure_path", "input_structure_sha256", "chains",
+    "numbering_basis", "target_sites", "mutations_planned",
+    "ddg_program", "ddg_params",
+]
+
+
+def contract_check(task_dir: str) -> dict:
+    """校验任务目录状态文件是否满足下游消费契约（只读，不修改任何文件）。
+
+    返回 {"ok", "legacy", "missing", "warnings", "manifest", "effective_status"}：
+      - ok=False：缺必填字段或未到可消费终态（completed|partial）→ 下游必须拒绝；
+      - legacy=True：无 contract_version 的旧任务（v0.1 之前落盘），字段不全属预期；
+      - warnings：不改判 ok 的诚实提示（哈希不一致/版本未知/gromacs_ready=False 等）。
+    """
+    import hashlib as _hashlib
+    state = state_read(task_dir)
+    if not state:
+        return {"ok": False, "legacy": False, "missing": ["task_status.json 不存在或不可解析"],
+                "warnings": [], "manifest": {}, "effective_status": None}
+    m = state.get("manifest") or {}
+    legacy = not m.get("contract_version")
+    missing = [k for k in _CONTRACT_REQUIRED if not m.get(k)]
+    warnings = []
+    if m.get("contract_version") and m["contract_version"] != CONTRACT_VERSION:
+        warnings.append(f"契约版本 {m['contract_version']} 与本实现 {CONTRACT_VERSION} 不同，按同名规则校验")
+    sha = m.get("input_structure_sha256")
+    rel = m.get("input_structure_path") or "protein.pdb"
+    fp = os.path.join(task_dir, rel)
+    if sha and os.path.exists(fp):
+        try:
+            with open(fp, "rb") as f:
+                h = _hashlib.sha256(f.read()).hexdigest()
+            if h != sha:
+                warnings.append(f"input_structure_sha256 与当前 {rel} 不一致（文件可能被改动）")
+        except OSError:
+            warnings.append(f"{rel} 无法读取，无法核对哈希")
+    elif sha and not os.path.exists(fp):
+        warnings.append(f"input_structure_path={rel} 在任务目录中不存在")
+    if not m.get("rosetta_version"):
+        warnings.append("rosetta_version 未知（旧任务或运行时捕获失败）")
+    if m.get("gromacs_ready") is not True:
+        warnings.append("gromacs_ready=False：结构未经 MD 准备，下游不得直接作为 GROMACS 输入")
+    eff = state_effective(task_dir)
+    eff_status = eff.get("status")
+    if eff_status not in (STATUS_COMPLETED, STATUS_PARTIAL):
+        missing.append(f"effective_status={eff_status}（未到可消费终态）")
+    ok = not missing
+    return {"ok": ok, "legacy": legacy, "missing": missing, "warnings": warnings,
+            "manifest": m, "effective_status": eff_status}

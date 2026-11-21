@@ -159,7 +159,12 @@ def _finalize_status(task_dir, my_pid, **updates):
             state["updated_at"] = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
             _dump_state(path, state, task_dir)
             return
+        mp = updates.pop("manifest_patch", None)
         state.update(updates)
+        if mp:
+            _m = state.get("manifest") or {}
+            _m.update(mp)
+            state["manifest"] = _m
         state["updated_at"] = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         _dump_state(path, state, task_dir)
     except Exception:
@@ -770,15 +775,38 @@ subprocess.run([sys.executable, "auto_clean.py"])
 
 summary_path = os.path.join(task_dir, "summary", "ddg_results.txt")
 n_ddg = len(glob.glob("*.ddg"))
-if n_ddg > 0:
+n_planned = len(tasks)
+_rosetta_version = None
+try:
+    for _log in sorted(glob.glob("mut_*.log")) + sorted(glob.glob(os.path.join(relax_dir, "*.log"))):
+        with open(_log, "r", errors="ignore") as _lf:
+            for _line in _lf:
+                if "core.init: Rosetta version:" in _line:
+                    _rosetta_version = _line.split("Rosetta version:", 1)[1].strip()[:160]
+                    break
+        if _rosetta_version:
+            break
+except Exception:
+    _rosetta_version = None
+_manifest_patch = {{"mutations_succeeded": n_ddg, "mutations_failed": max(n_planned - n_ddg, 0),
+                    "rosetta_version": _rosetta_version}}
+if n_ddg > 0 and n_planned > 0 and n_ddg < n_planned:
+    _finalize_status(task_dir, os.getpid(), status="partial", stage="mutagenesis",
+                     status_note=f"部分成功（{{n_ddg}}/{{n_planned}} 个 .ddg）；失败项查看 mut_*.log 末尾的 [exit code]",
+                     artifacts={{"ddg_results": "summary/ddg_results.txt",
+                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}},
+                     manifest_patch=_manifest_patch)
+elif n_ddg > 0:
     _finalize_status(task_dir, os.getpid(), status="completed", stage="mutagenesis",
                      status_note=f"突变计算完成（{{n_ddg}} 个 .ddg）",
                      artifacts={{"ddg_results": "summary/ddg_results.txt",
-                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}})
+                                "wt_relaxed": "cartesian_relax/wt_relaxed.pdb"}},
+                     manifest_patch=_manifest_patch)
 else:
     _finalize_status(task_dir, os.getpid(), status="failed", stage="mutagenesis",
                      error_type="NoSuccessfulMutants",
-                     error_detail=f"0 个成功突变（{{'ddg_results.txt 在位' if os.path.exists(summary_path) else '无汇总'}}）；逐个查看 mut_*.log 末尾的 [exit code]")
+                     error_detail=f"0 个成功突变（{{'ddg_results.txt 在位' if os.path.exists(summary_path) else '无汇总'}}）；逐个查看 mut_*.log 末尾的 [exit code]",
+                     manifest_patch=_manifest_patch)
 print(" 突变全流程结束！")
 ''')
     with open(os.path.join(mut_dir, "run_ddg.py"), "w") as f: f.write(runner_py)
@@ -796,8 +824,19 @@ print(" 突变全流程结束！")
             pids = dict(prev.get("runner_pids") or {})
             pids["ddg"] = proc.pid
             _record_status(stage="mutagenesis", status="running", runner_pids=pids)
+            _protein_path = os.path.join(task_dir, "protein.pdb")
+            _input_sha = None
+            try:
+                import hashlib as _hashlib
+                with open(_protein_path, "rb") as _hf:
+                    _input_sha = _hashlib.sha256(_hf.read()).hexdigest()
+            except OSError:
+                _input_sha = None
             set_manifest(
                 task_dir,
+                contract_version=task_runtime.CONTRACT_VERSION,
+                input_structure_path="protein.pdb",
+                input_structure_sha256=_input_sha,
                 input_structure="protein.pdb",
                 numbering_basis="cartesian_relax/complex_rosetta_ready.pdb（清洗后结构；规则见 task_runtime.build_numbering）",
                 chains=nmap.chains,
