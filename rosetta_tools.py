@@ -2023,6 +2023,17 @@ def suggest_plan(protein_pdb_path: str = "") -> str:
     lines.append(f"【建议计划】{info['playbook_file']}")
     lines.append(f"  步骤概要: {step_hint}")
     lines.append(f"【缺项/注意】\n{missing}")
+    est = {
+        "A": "参数化 ~1 分钟(仅配体任务)；弛豫(2 构象,≤300 残基)约 3-6 分钟；"
+             "饱和扫描(1 位点×19, jobs=16)约 5-8 分钟；合计粗估 10-15 分钟",
+        "B": "配体参数化约 1-2 分钟；复合物弛豫约 4-8 分钟；扫描约 8-12 分钟(带配体约 +50%)；"
+             "合计粗估 15-22 分钟",
+        "C": "多链弛豫约 5-10 分钟(随总残基数上升)；界面分析约 1-2 分钟；"
+             "扫描按位点数×19 线性增加；合计粗估 ≥15 分钟",
+    }[info["playbook"]]
+    if info["n_residues"] > 300:
+        est += f"；注意:本结构 {info['n_residues']} 残基,各步耗时可能 ×2-3"
+    lines.append(f"【预计耗时】{est}（2026-11-21 多次实测的粗估,以任务实际为准）")
     lines.append("【停止条件】见计划手册；缺配体/位点歧义/参数化失败一律停下问用户，不猜测")
     lines.append("【边界】计划是建议；科学参数由工具默认值锁定，LLM 不得修改；执行前需用户确认")
     return "\n".join(lines)
@@ -2081,9 +2092,19 @@ def summarize_results(task_dir: str = "") -> str:
         if v < 0:
             p = struct_map.get(n)
             relay.append("%s（ΔΔG=%+.3f）%s" % (n, v, "→ 结构: " + p if p else "→ 结构未导出(重扫可开 export_structures=True)"))
+    _st = state.get("state") or {}
+    _mins = None
+    try:
+        from datetime import datetime as _dt
+        _a = _dt.strptime(_st.get("created_at"), "%Y-%m-%dT%H:%M:%S")
+        _b = _dt.strptime(_st.get("updated_at"), "%Y-%m-%dT%H:%M:%S")
+        _mins = round((_b - _a).total_seconds() / 60.0, 1)
+    except Exception:
+        _mins = None
     lines = [
         "===== 任务结果报告：%s =====" % os.path.basename(td),
         "终态: %s%s" % (state["status"], ("（%s）" % state["note"]) if state.get("note") else ""),
+        "实际耗时: %s（创建 → 最近更新）" % (f"{_mins} 分钟" if _mins is not None else "未知"),
         "计划/执行: %s | %s（%d 个突变）" % (m.get("contract_version") or "旧任务(无契约字段)",
                                         m.get("ddg_program"), len(rows)),
         "口径: ΔΔG = min(MUT 三次) − min(WT 三次)，单位 REU——稳定性预测口径，"

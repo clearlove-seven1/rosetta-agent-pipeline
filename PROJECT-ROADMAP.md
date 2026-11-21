@@ -105,6 +105,12 @@ GPU 空闲,无 mdrun/gmx 计算进程。
   (NameError)并当场修复,评测新增"启动链路导入守卫"防复发;ros-gro 不上传(终局决定)。
 - 2026-11-21:octop 冒烟 PASS(用户侧截图:21 工具可见、suggest_plan/summarize_results 实调成功)。
   **§七 全部完成,无挂账**;后续输入=用户使用反馈。
+- 2026-11-21 19:xx:**借鉴 /opt/software/docking 生态的 docking agent 方式,上线成本/耗时可见化**——
+  ①LLM token 逐条记录 output/usage_stats.jsonl(回调式,失败不影响对话);②每轮对话收尾自动上屏
+  〔token 用量〕本轮/任务累计(来自消息自带 usage_metadata);③suggest_plan 增【预计耗时】
+  (A/B/C 三类实测粗估,大体系 ×2-3 提醒);④summarize_results 增【实际耗时】(创建→最近更新)。
+  实测:一次对话 3 条 jsonl(glm-5.3-flash)、55.5 分钟报告;修复 json 未导入致记录被吞(评测+实测双抓)。
+  测试 eval_usage 12/12,8 套全绿。
 
 ## 七、目标调整后的剩余工作清单(Rosetta 侧,按价值排序)
 

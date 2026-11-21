@@ -61,11 +61,56 @@ base_url = os.getenv("LLM_BASE_URL", "https://api.shubiaobiao.cn/v1")
 if not api_key:
     raise ValueError("没有找到 LLM_API_KEY，请检查 .env 文件")
 
+from langchain_core.callbacks import BaseCallbackHandler
+from datetime import datetime
+
+# ==========================================
+# 1.5 LLM token 用量统计(借鉴 docking agent 的 usage_stats.jsonl 方式,2026-11-21)
+# ==========================================
+import json  # token 用量 jsonl 记录用(2026-11-21 修复:此前 NameError 被 try 吞掉)
+USAGE_LOG_PATH = os.getenv("ROSETTA_USAGE_LOG") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "output", "usage_stats.jsonl")
+
+
+class _TokenUsageCallback(BaseCallbackHandler):
+    """每次 LLM 调用结束,把 token 用量逐行追加进 usage_stats.jsonl(成本统计;
+    任何失败都不影响对话——docking agent 同款纪律)。并发安全:单行追加。"""
+
+    def on_llm_end(self, response, **kwargs) -> None:  # noqa: D102
+        try:
+            usage = None
+            try:
+                um = response.generations[0][0].message.usage_metadata
+                if um:
+                    usage = {"prompt": um.get("input_tokens"),
+                             "completion": um.get("output_tokens"),
+                             "total": um.get("total_tokens")}
+            except Exception:
+                usage = None
+            if not usage or not usage.get("total"):
+                lo = (response.llm_output or {}).get("token_usage") or {}
+                usage = {"prompt": lo.get("prompt_tokens"),
+                         "completion": lo.get("completion_tokens"),
+                         "total": lo.get("total_tokens")}
+            if not usage.get("total"):
+                return
+            os.makedirs(os.path.dirname(USAGE_LOG_PATH), exist_ok=True)
+            with open(USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                                    "model": os.getenv("LLM_MODEL", ""),
+                                    **usage}) + "\n")
+        except Exception:
+            pass
+
+
+_token_cb = _TokenUsageCallback()
+
 llm = ChatOpenAI(
     model=os.getenv("LLM_MODEL", "grok-4-1-fast-non-reasoning"),
     api_key=api_key,
     base_url=base_url,
     temperature=0,
+    callbacks=[_token_cb],
 )
 
 # ==========================================
@@ -680,7 +725,40 @@ def summarize_node(state: AgentState):
         SystemMessage(content=SUMMARIZE_SYSTEM),
         *state["messages"],
     ])
+    # token 用量上屏(借鉴 docking 成本统计;失败不影响回复正文)
+    try:
+        (tp, tc, tt), (hp, hc, ht) = _turn_thread_usage(list(state["messages"]) + [response])
+        if tt:
+            suffix = (f"\n\n〔token 用量〕本轮 输入 {tp} / 输出 {tc} / 合计 {tt}"
+                      f" · 任务累计 {ht}(逐条明细见 output/usage_stats.jsonl)")
+            if isinstance(response.content, str):
+                response.content += suffix
+    except Exception:
+        pass
     return {"messages": [response]}
+
+
+def _usage_of_message(m):
+    um = getattr(m, "usage_metadata", None) or {}
+    return (um.get("input_tokens") or 0, um.get("output_tokens") or 0, um.get("total_tokens") or 0)
+
+
+def _turn_thread_usage(messages):
+    """本轮(最后一条 Human 之后)与整线程的 token 累计(来自各 AIMessage.usage_metadata)。"""
+    turn = [0, 0, 0]
+    thread = [0, 0, 0]
+    seen_human = False
+    for m in messages:
+        u = _usage_of_message(m)
+        for i in range(3):
+            thread[i] += u[i]
+        if isinstance(m, HumanMessage):
+            seen_human = True
+            turn = [0, 0, 0]
+        elif isinstance(m, AIMessage) and seen_human:
+            for i in range(3):
+                turn[i] += u[i]
+    return tuple(turn), tuple(thread)
 
 
 # ==========================================
